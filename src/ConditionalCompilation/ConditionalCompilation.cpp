@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <regex>
 #include <utility>
 
@@ -152,6 +153,81 @@ std::string MakeJudgeConditionCacheKey(const std::string& condition, TokenKind o
     key.push_back(static_cast<char>(static_cast<unsigned char>(op)));
     key.push_back('\0');
     key.append(right);
+    return key;
+}
+
+void AppendCacheField(std::string& key, const std::string& field)
+{
+    key.append(field);
+    key.push_back('\0');
+}
+
+template <typename T> void AppendEnumCacheField(std::string& key, T value)
+{
+    key.append(std::to_string(static_cast<unsigned>(value)));
+    key.push_back('\0');
+}
+
+bool AppendConditionExprCacheKey(const Expr& condition, std::string& key)
+{
+    AppendEnumCacheField(key, condition.astKind);
+    switch (condition.astKind) {
+        case ASTKind::BINARY_EXPR: {
+            auto& be = static_cast<const BinaryExpr&>(condition);
+            if (be.leftExpr == nullptr || be.rightExpr == nullptr) {
+                return false;
+            }
+            AppendEnumCacheField(key, be.op);
+            return AppendConditionExprCacheKey(*be.leftExpr, key) && AppendConditionExprCacheKey(*be.rightExpr, key);
+        }
+        case ASTKind::UNARY_EXPR: {
+            auto& ue = static_cast<const UnaryExpr&>(condition);
+            if (ue.expr == nullptr) {
+                return false;
+            }
+            AppendEnumCacheField(key, ue.op);
+            return AppendConditionExprCacheKey(*ue.expr, key);
+        }
+        case ASTKind::REF_EXPR: {
+            auto& re = static_cast<const RefExpr&>(condition);
+            AppendCacheField(key, re.ref.identifier.Val());
+            return true;
+        }
+        case ASTKind::PAREN_EXPR: {
+            auto& pe = static_cast<const ParenExpr&>(condition);
+            if (pe.expr == nullptr) {
+                return false;
+            }
+            return AppendConditionExprCacheKey(*pe.expr, key);
+        }
+        case ASTKind::LIT_CONST_EXPR: {
+            auto& lit = static_cast<const LitConstExpr&>(condition);
+            AppendEnumCacheField(key, lit.kind);
+            key.push_back(lit.siExpr != nullptr ? '1' : '0');
+            key.push_back('\0');
+            AppendCacheField(key, lit.stringValue);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+std::optional<std::string> MakeConditionExprCacheKey(const Expr& condition)
+{
+    switch (condition.astKind) {
+        case ASTKind::BINARY_EXPR:
+        case ASTKind::UNARY_EXPR:
+        case ASTKind::REF_EXPR:
+        case ASTKind::PAREN_EXPR:
+            break;
+        default:
+            return std::nullopt;
+    }
+    std::string key;
+    if (!AppendConditionExprCacheKey(condition, key)) {
+        return std::nullopt;
+    }
     return key;
 }
 } // namespace
@@ -469,6 +545,24 @@ bool ConditionalCompilationImpl::EvalConditionExpr(const Expr& condition)
     }
 }
 
+bool ConditionalCompilationImpl::EvalCachedConditionExpr(const Expr& condition)
+{
+    auto cacheKey = MakeConditionExprCacheKey(condition);
+    if (!cacheKey.has_value()) {
+        return EvalConditionExpr(condition);
+    }
+    auto cached = conditionExprCache.find(*cacheKey);
+    if (cached != conditionExprCache.end()) {
+        return cached->second;
+    }
+    auto beforeErrCnt = ci->diag.GetErrorCount();
+    auto result = EvalConditionExpr(condition);
+    if (beforeErrCnt == ci->diag.GetErrorCount()) {
+        conditionExprCache.emplace(std::move(*cacheKey), result);
+    }
+    return result;
+}
+
 void ConditionalCompilationImpl::HandleConditionalCompilation(const Package& root)
 {
     for (auto& file : root.files) {
@@ -503,7 +597,7 @@ template <typename T> bool ConditionalCompilationImpl::EvalNodeCondition(Ptr<T> 
                 DiagKindRefactor::conditional_compilation_not_have_condition_expr, anno->begin);
             return true;
         }
-        evalResult = EvalConditionExpr(anno->condExpr.operator*());
+        evalResult = EvalCachedConditionExpr(anno->condExpr.operator*());
         return true;
     };
     Utils::EraseIf(node->annotations, filterPred);

@@ -80,8 +80,10 @@ private:
     std::unordered_map<std::string, std::string> passedCondition;
     std::unordered_map<std::string, std::string> builtinConditionCache;
     std::unordered_map<std::string, bool> judgeConditionCache;
+    std::unordered_map<std::string, bool> conditionExprCache;
 
     bool EvalConditionExpr(const Expr& condition);
+    bool EvalCachedConditionExpr(const Expr& condition);
 
     bool ConditionCheck(const std::string& conditionStr, const Position& begin, const std::string& right);
 
