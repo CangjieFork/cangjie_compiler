@@ -14,7 +14,7 @@
 #define CANGJIE_CONDITIONALCOMPILATION_CONDITIONALCOMPILATIONIMPL_H
 
 #include <regex>
-#include <optional>
+#include <unordered_map>
 
 #include "cangjie/AST/Match.h"
 #include "cangjie/AST/Walker.h"
@@ -67,8 +67,9 @@ private:
     {
         return std::to_string(static_cast<int>(test));
     }
-    std::optional<std::string> GetUserDefinedInfoByName(const std::string& name) const;
-    std::optional<std::string> GetRelatedInfo(const std::string& target) const;
+    void InitBuiltinConditionCache();
+    const std::string* GetUserDefinedInfoByName(const std::string& name) const;
+    const std::string* GetRelatedInfo(const std::string& target) const;
 
     CompilerInstance* ci{nullptr};
     Triple::BackendType backendType;
@@ -77,6 +78,8 @@ private:
     bool debug;
     bool test;
     std::unordered_map<std::string, std::string> passedCondition;
+    std::unordered_map<std::string, std::string> builtinConditionCache;
+    std::unordered_map<std::string, bool> judgeConditionCache;
 
     bool EvalConditionExpr(const Expr& condition);
 

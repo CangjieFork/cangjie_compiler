@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <functional>
 #include <regex>
+#include <utility>
 
 #include "ConditionalCompilationImpl.h"
 #include "cangjie/AST/Match.h"
@@ -141,6 +142,18 @@ template <typename T, typename Pred> void EraseConditionalIf(T& container, Pred 
 {
     container.erase(std::remove_if(container.begin(), container.end(), pred), container.end());
 }
+
+std::string MakeJudgeConditionCacheKey(const std::string& condition, TokenKind op, const std::string& right)
+{
+    std::string key;
+    key.reserve(condition.size() + right.size() + 3);
+    key.append(condition);
+    key.push_back('\0');
+    key.push_back(static_cast<char>(static_cast<unsigned char>(op)));
+    key.push_back('\0');
+    key.append(right);
+    return key;
+}
 } // namespace
 
 static auto GetVersionUInt(const std::string& version) -> uint32_t
@@ -169,6 +182,7 @@ ConditionalCompilationImpl::ConditionalCompilationImpl(CompilerInstance* c)
       test(ci->invocation.globalOptions.enableCompileTest),
       passedCondition(ci->invocation.globalOptions.passedWhenKeyValue)
 {
+    InitBuiltinConditionCache();
     // in cjc cfg has been parsed, in lsp need parse and check cfg here.
     if (ci->invocation.globalOptions.enableMacroInLSP) {
         if (!passedCondition.empty()) {
@@ -204,6 +218,17 @@ ConditionalCompilationImpl::ConditionalCompilationImpl(CompilerInstance* c)
     }
 }
 
+void ConditionalCompilationImpl::InitBuiltinConditionCache()
+{
+    builtinConditionCache.emplace(ARCH_STR, GetArchType());
+    builtinConditionCache.emplace(BACKEND_STR, GetBackendType());
+    builtinConditionCache.emplace(CJC_VERSION_STR, GetCJCVersion());
+    builtinConditionCache.emplace(DEBUG_STR, GetDebug());
+    builtinConditionCache.emplace(ENV_STR, GetEnv());
+    builtinConditionCache.emplace(TEST_STR, GetTest());
+    builtinConditionCache.emplace(OS_STR, GetOSType());
+}
+
 static inline auto IsLogicBinaryExpr(const BinaryExpr& expr) -> bool
 {
     return expr.op >= TokenKind::AND && expr.op <= TokenKind::OR;
@@ -237,14 +262,14 @@ std::string ConditionalCompilationImpl::GetOSType() const
     return triple.OSToString();
 }
 
-std::optional<std::string> ConditionalCompilationImpl::GetUserDefinedInfoByName(const std::string& name) const
+const std::string* ConditionalCompilationImpl::GetUserDefinedInfoByName(const std::string& name) const
 {
     auto found = passedCondition.find(name);
     if (found == passedCondition.end()) {
-        return std::nullopt; // "" is one of env options.
+        return nullptr; // "" is one of env options.
     }
 
-    return found->second;
+    return &found->second;
 }
 
 bool ConditionalCompilationImpl::EvalLogicBinaryExpr(const BinaryExpr& be)
@@ -334,28 +359,38 @@ bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
         return false;
     }
     auto left = RawStaticCast<RefExpr*>(be.leftExpr.get());
-    auto conditionStr = left->ref.identifier;
-    if (!ConditionCheck(conditionStr, be.begin, right->stringValue)) {
+    const auto& conditionStr = left->ref.identifier.Val();
+    const auto& rightValue = right->stringValue;
+    auto cacheKey = MakeJudgeConditionCacheKey(conditionStr, be.op, rightValue);
+    auto cached = judgeConditionCache.find(cacheKey);
+    if (cached != judgeConditionCache.end()) {
+        return cached->second;
+    }
+    if (!ConditionCheck(conditionStr, be.begin, rightValue)) {
         return false;
     }
     auto relatedInfo = GetRelatedInfo(conditionStr);
-    if (!relatedInfo.has_value()) {
+    if (relatedInfo == nullptr) {
         return false;
     }
     // Filter not support op.
     auto conditionOps = CONDITION_OP.find(conditionStr);
     if (conditionOps != CONDITION_OP.end() && Utils::NotIn(be.op, conditionOps->second)) {
         (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_not_support_op, be.begin,
-            conditionStr.Val(), TOKENS[static_cast<int>(be.op)]);
+            conditionStr, TOKENS[static_cast<int>(be.op)]);
         return false;
     }
     // Decode cjc version to judge.
+    auto evalRightValue = &rightValue;
+    std::string refreshedRightValue;
     if (conditionStr == CJC_VERSION_STR) {
-        std::string version = std::to_string(GetVersionUInt(right->stringValue));
-        right->stringValue = RefreshVersionStr(version);
+        refreshedRightValue = std::to_string(GetVersionUInt(rightValue));
+        refreshedRightValue = RefreshVersionStr(refreshedRightValue);
+        evalRightValue = &refreshedRightValue;
     }
-    auto leftValue = relatedInfo.value();
-    return Eval(be, leftValue, right->stringValue);
+    auto evalResult = Eval(be, *relatedInfo, *evalRightValue);
+    judgeConditionCache.emplace(std::move(cacheKey), evalResult);
+    return evalResult;
 }
 
 bool ConditionalCompilationImpl::EvalBinaryExpr(const BinaryExpr& be)
@@ -396,10 +431,10 @@ bool ConditionalCompilationImpl::EvalUnaryExpr(const UnaryExpr& ue) const
         return false;
     }
     auto relatedInfo = GetRelatedInfo(conditionExpr->ref.identifier);
-    if (!relatedInfo.has_value()) {
+    if (relatedInfo == nullptr) {
         return false;
     }
-    return relatedInfo.value() != CONDITION_TRUE; // !debug or !test
+    return *relatedInfo != CONDITION_TRUE; // !debug or !test
 }
 
 bool ConditionalCompilationImpl::EvalRefExpr(const RefExpr& re) const
@@ -409,10 +444,10 @@ bool ConditionalCompilationImpl::EvalRefExpr(const RefExpr& re) const
         return false;
     }
     auto relatedInfo = GetRelatedInfo(re.ref.identifier);
-    if (!relatedInfo.has_value()) {
+    if (relatedInfo == nullptr) {
         return false;
     }
-    return relatedInfo.value() == CONDITION_TRUE;
+    return *relatedInfo == CONDITION_TRUE;
 }
 
 bool ConditionalCompilationImpl::EvalConditionExpr(const Expr& condition)
@@ -566,28 +601,11 @@ void ConditionalCompilation::HandleFileConditionalCompilation(File& file) const
     impl->HandleFileConditionalCompilation(file);
 }
 
-std::optional<std::string> ConditionalCompilationImpl::GetRelatedInfo(const std::string& target) const
+const std::string* ConditionalCompilationImpl::GetRelatedInfo(const std::string& target) const
 {
-    if (target == ARCH_STR) {
-        return GetArchType();
-    }
-    if (target == BACKEND_STR) {
-        return GetBackendType();
-    }
-    if (target == CJC_VERSION_STR) {
-        return GetCJCVersion();
-    }
-    if (target == DEBUG_STR) {
-        return GetDebug();
-    }
-    if (target == ENV_STR) {
-        return GetEnv();
-    }
-    if (target == TEST_STR) {
-        return GetTest();
-    }
-    if (target == OS_STR) {
-        return GetOSType();
+    auto builtin = builtinConditionCache.find(target);
+    if (builtin != builtinConditionCache.end()) {
+        return &builtin->second;
     }
     return GetUserDefinedInfoByName(target);
 }
