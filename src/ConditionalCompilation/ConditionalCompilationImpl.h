@@ -68,10 +68,6 @@ private:
         return std::to_string(static_cast<int>(test));
     }
     std::optional<std::string> GetUserDefinedInfoByName(const std::string& name) const;
-    inline auto GetPassedValues() const
-    {
-        return passedCondition;
-    }
     std::optional<std::string> GetRelatedInfo(const std::string& target) const;
 
     CompilerInstance* ci{nullptr};

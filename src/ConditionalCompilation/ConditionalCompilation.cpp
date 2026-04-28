@@ -10,6 +10,8 @@
  * This file implements macro conditional compilation related apis for compiler.
  */
 
+#include <algorithm>
+#include <functional>
 #include <regex>
 
 #include "ConditionalCompilationImpl.h"
@@ -134,6 +136,11 @@ const std::map<std::string, std::vector<std::string>> CONDITION_VALUES = {
         }
     },
 };
+
+template <typename T, typename Pred> void EraseConditionalIf(T& container, Pred pred)
+{
+    container.erase(std::remove_if(container.begin(), container.end(), pred), container.end());
+}
 } // namespace
 
 static auto GetVersionUInt(const std::string& version) -> uint32_t
@@ -232,20 +239,20 @@ std::string ConditionalCompilationImpl::GetOSType() const
 
 std::optional<std::string> ConditionalCompilationImpl::GetUserDefinedInfoByName(const std::string& name) const
 {
-    auto passedValues = GetPassedValues();
-    if (passedValues.count(name) == 0) {
-        return std::nullopt; // "" is one of env options. 
+    auto found = passedCondition.find(name);
+    if (found == passedCondition.end()) {
+        return std::nullopt; // "" is one of env options.
     }
 
-    return passedValues.at(name);
+    return found->second;
 }
 
 bool ConditionalCompilationImpl::EvalLogicBinaryExpr(const BinaryExpr& be)
 {
     if (be.op == TokenKind::AND) {
-        return Utils::AllOf(EvalConditionExpr(be.leftExpr.operator*()), EvalConditionExpr(be.rightExpr.operator*()));
+        return EvalConditionExpr(be.leftExpr.operator*()) && EvalConditionExpr(be.rightExpr.operator*());
     } else {
-        return Utils::AnyOf(EvalConditionExpr(be.leftExpr.operator*()), EvalConditionExpr(be.rightExpr.operator*()));
+        return EvalConditionExpr(be.leftExpr.operator*()) || EvalConditionExpr(be.rightExpr.operator*());
     }
 }
 
@@ -260,9 +267,10 @@ bool ConditionalCompilationImpl::ConditionCheck(
         return false;
     }
     // Check `arch`, `env`, `backend` and `os` condition value.
-    if (CONDITION_VALUES.count(conditionStr) > 0 && !Utils::In(right, CONDITION_VALUES.at(conditionStr))) {
+    auto conditionValues = CONDITION_VALUES.find(conditionStr);
+    if (conditionValues != CONDITION_VALUES.end() && !Utils::In(right, conditionValues->second)) {
         std::string supportedValues = "";
-        for (const auto& it : CONDITION_VALUES.at(conditionStr)) {
+        for (const auto& it : conditionValues->second) {
             supportedValues += it + " ";
         }
         supportedValues.pop_back();
@@ -272,7 +280,7 @@ bool ConditionalCompilationImpl::ConditionCheck(
     }
     // Check `cjc_version`.
     if (conditionStr == CJC_VERSION_STR) {
-        std::regex cjcVersionRegex("[0-9]{1,2}[.][0-9]{1,2}[.][0-9]{1,2}");
+        static const std::regex cjcVersionRegex("[0-9]{1,2}[.][0-9]{1,2}[.][0-9]{1,2}");
         if (!std::regex_match(right, cjcVersionRegex)) {
             (void)ci->diag.DiagnoseRefactor(
                 DiagKindRefactor::conditional_compilation_not_support_cjc_version_format, begin);
@@ -335,7 +343,8 @@ bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
         return false;
     }
     // Filter not support op.
-    if (CONDITION_OP.count(conditionStr) > 0 && Utils::NotIn(be.op, CONDITION_OP.at(conditionStr))) {
+    auto conditionOps = CONDITION_OP.find(conditionStr);
+    if (conditionOps != CONDITION_OP.end() && Utils::NotIn(be.op, conditionOps->second)) {
         (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_not_support_op, be.begin,
             conditionStr.Val(), TOKENS[static_cast<int>(be.op)]);
         return false;
@@ -483,50 +492,50 @@ void ConditionalCompilationImpl::HandleFileConditionalCompilation(File& file)
         switch (curNode->astKind) {
             case ASTKind::FILE: {
                 auto file = StaticAs<ASTKind::FILE>(curNode);
-                Utils::EraseIf(file->imports, std::not_fn(pred));
-                Utils::EraseIf(file->decls, std::not_fn(pred));
+                EraseConditionalIf(file->imports, std::not_fn(pred));
+                EraseConditionalIf(file->decls, std::not_fn(pred));
                 break;
             }
             case ASTKind::INTERFACE_BODY: {
                 auto ib = StaticAs<ASTKind::INTERFACE_BODY>(curNode);
-                Utils::EraseIf(ib->decls, std::not_fn(pred));
+                EraseConditionalIf(ib->decls, std::not_fn(pred));
                 break;
             }
             case ASTKind::CLASS_BODY: {
                 auto cb = StaticAs<ASTKind::CLASS_BODY>(curNode);
-                Utils::EraseIf(cb->decls, std::not_fn(pred));
+                EraseConditionalIf(cb->decls, std::not_fn(pred));
                 break;
             }
             case ASTKind::STRUCT_BODY: {
                 auto sb = StaticAs<ASTKind::STRUCT_BODY>(curNode);
-                Utils::EraseIf(sb->decls, std::not_fn(pred));
+                EraseConditionalIf(sb->decls, std::not_fn(pred));
                 break;
             }
             case ASTKind::ENUM_DECL: {
                 auto ed = StaticAs<ASTKind::ENUM_DECL>(curNode);
-                Utils::EraseIf(ed->members, std::not_fn(pred));
-                Utils::EraseIf(ed->constructors, std::not_fn(pred));
+                EraseConditionalIf(ed->members, std::not_fn(pred));
+                EraseConditionalIf(ed->constructors, std::not_fn(pred));
                 break;
             }
             case ASTKind::EXTEND_DECL: {
                 auto ed = StaticAs<ASTKind::EXTEND_DECL>(curNode);
-                Utils::EraseIf(ed->members, std::not_fn(pred));
+                EraseConditionalIf(ed->members, std::not_fn(pred));
                 break;
             }
             case ASTKind::PROP_DECL: {
                 auto pd = StaticAs<ASTKind::PROP_DECL>(curNode);
-                Utils::EraseIf(pd->setters, std::not_fn(pred));
-                Utils::EraseIf(pd->getters, std::not_fn(pred));
+                EraseConditionalIf(pd->setters, std::not_fn(pred));
+                EraseConditionalIf(pd->getters, std::not_fn(pred));
                 break;
             }
             case ASTKind::FUNC_PARAM_LIST: {
                 auto fpl = StaticAs<ASTKind::FUNC_PARAM_LIST>(curNode);
-                Utils::EraseIf(fpl->params, std::not_fn(pred));
+                EraseConditionalIf(fpl->params, std::not_fn(pred));
                 break;
             }
             case ASTKind::BLOCK: {
                 auto block = StaticAs<ASTKind::BLOCK>(curNode);
-                Utils::EraseIf(block->body, std::not_fn(pred));
+                EraseConditionalIf(block->body, std::not_fn(pred));
                 break;
             }
             case ASTKind::MACRO_EXPAND_DECL:
@@ -559,21 +568,26 @@ void ConditionalCompilation::HandleFileConditionalCompilation(File& file) const
 
 std::optional<std::string> ConditionalCompilationImpl::GetRelatedInfo(const std::string& target) const
 {
-    // only used in this function
-    const std::map<const std::string, std::function<std::string()>> conditionMap = {
-        {ARCH_STR, [this]() -> std::string { return GetArchType(); }},
-        {BACKEND_STR, [this]() -> std::string { return GetBackendType(); }},
-        {CJC_VERSION_STR, [this]() -> std::string { return GetCJCVersion(); }},
-        {DEBUG_STR, [this]() -> std::string { return GetDebug(); }},
-        {ENV_STR, [this]() -> std::string { return GetEnv(); }},
-        {TEST_STR, [this]() -> std::string { return GetTest(); }},
-        {OS_STR, [this]() -> std::string { return GetOSType(); }},
-    };
-    std::optional<std::string> ret;
-    if (conditionMap.find(target) != conditionMap.end()) {
-        ret = conditionMap.at(target)();
-    } else {
-        ret = GetUserDefinedInfoByName(target);
+    if (target == ARCH_STR) {
+        return GetArchType();
     }
-    return ret;
+    if (target == BACKEND_STR) {
+        return GetBackendType();
+    }
+    if (target == CJC_VERSION_STR) {
+        return GetCJCVersion();
+    }
+    if (target == DEBUG_STR) {
+        return GetDebug();
+    }
+    if (target == ENV_STR) {
+        return GetEnv();
+    }
+    if (target == TEST_STR) {
+        return GetTest();
+    }
+    if (target == OS_STR) {
+        return GetOSType();
+    }
+    return GetUserDefinedInfoByName(target);
 }
