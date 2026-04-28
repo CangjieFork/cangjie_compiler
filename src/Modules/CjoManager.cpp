@@ -53,6 +53,22 @@ bool CanInline(const GlobalOptions& opts)
     return opts.chirLLVM && opts.optimizationLevel > GlobalOptions::OptimizationLevel::O1 && !opts.enableCompileTest &&
         !opts.enableHotReload;
 }
+
+std::string FindCjoPath(CjoManagerImpl& impl, const std::string& fullPackageName, const std::string& cachedCjoPath,
+    const std::vector<std::string>& searchPath)
+{
+    auto& cjoFileCacheMap = impl.GetCjoFileCacheMap();
+    if (auto found = cjoFileCacheMap.find(fullPackageName); found != cjoFileCacheMap.end()) {
+        return cachedCjoPath;
+    }
+    std::string cjoPath;
+    if (impl.GetCjoPathFromFindCache(fullPackageName, cjoPath)) {
+        return cjoPath;
+    }
+    cjoPath = FileUtil::FindSerializationFile(fullPackageName, SERIALIZED_FILE_EXTENSION, searchPath);
+    impl.CacheCjoPathForFind(fullPackageName, cjoPath);
+    return cjoPath;
+}
 } // namespace
 
 CjoManager::CjoManager(const CjoManager::Config& config) : impl{new CjoManagerImpl{config}}
@@ -582,37 +598,27 @@ void CjoManager::AddPackageDeclMap(const std::string& fullPackageName, const std
 
 std::string CjoManager::GetPackageCjoPath(const std::string& fullPackageName) const
 {
-    if (auto found = impl->GetCjoFileCacheMap().find(fullPackageName); found != impl->GetCjoFileCacheMap().end()) {
-        return fullPackageName; // Set dummy path for cached cjo data.
-    }
-    std::string cjoPath = "";
-    if (impl->GetCjoPathFromFindCache(fullPackageName, cjoPath)) {
-        return cjoPath;
-    }
-    cjoPath = FileUtil::FindSerializationFile(fullPackageName, SERIALIZED_FILE_EXTENSION, GetSearchPath());
-    impl->CacheCjoPathForFind(fullPackageName, cjoPath);
-    return cjoPath;
+    return FindCjoPath(*impl, fullPackageName, fullPackageName, GetSearchPath());
 }
 
 std::pair<std::string, std::string> CjoManager::GetPackageCjo(const AST::ImportSpec& importSpec) const
 {
+    if (auto fullPackageName = GetPackageNameByImport(importSpec); !fullPackageName.empty()) {
+        auto cjoPath = FindCjoPath(*impl, fullPackageName, FileUtil::ToCjoFileName(fullPackageName), GetSearchPath());
+        return {fullPackageName, cjoPath};
+    }
     std::string cjoPath;
     std::string cjoName;
+    std::string cjoPackageName;
     for (auto it : GetPossibleCjoNames(importSpec)) {
         cjoName = it;
-        if (auto found = impl->GetCjoFileCacheMap().find(FileUtil::ToPackageName(cjoName));
-            found != impl->GetCjoFileCacheMap().end()) {
-            cjoPath = cjoName; // Set dummy path for cached cjo data.
-        } else {
-            cjoPath = FileUtil::FindSerializationFile(
-                FileUtil::ToPackageName(cjoName), SERIALIZED_FILE_EXTENSION, GetSearchPath());
-        }
+        cjoPackageName = FileUtil::ToPackageName(cjoName);
+        cjoPath = FindCjoPath(*impl, cjoPackageName, cjoName, GetSearchPath());
         if (!cjoPath.empty()) {
             break;
         }
     }
     CJC_ASSERT(!cjoName.empty());
-    auto cjoPackageName = FileUtil::ToPackageName(cjoName);
     // Store importSpec with packageName.
     std::string possibleName = importSpec.content.GetImportedPackageName();
     impl->AddImportedPackageName(&importSpec,
