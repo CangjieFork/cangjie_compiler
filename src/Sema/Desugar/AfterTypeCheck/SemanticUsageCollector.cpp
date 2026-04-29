@@ -340,11 +340,11 @@ private:
             std::lock_guard lockGuard{ExtendBoxMarker::mtx};
             Walker(&node, ExtendBoxMarker::GetMarkExtendBoxFunc(tyMgr)).Walk();
         }
-        auto boxedTys = tyMgr.GetAllBoxedTys();
-        tyMgr.ClearRecordUsedExtends(); // Unset collection status.
+        const auto& boxedTys = tyMgr.GetAllBoxedTys();
         for (auto ty : boxedTys) {
             usage.boxedTypes.emplace(Sema::GetTypeRawMangleName(*ty));
         }
+        tyMgr.ClearRecordUsedExtends(); // Unset collection status.
         auto nodePtr = &node;
         if (node.astKind == ASTKind::VAR_DECL) {
             // After collecting usage of boxing, change node from vardecl to its initializer.

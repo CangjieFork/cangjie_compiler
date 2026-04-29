@@ -13,6 +13,7 @@
 #include "TypeCheckerImpl.h"
 
 #include <map>
+#include <unordered_set>
 #include <vector>
 
 #include "TypeCheckUtil.h"
@@ -142,7 +143,6 @@ enum class Color {
 struct DefNode {
     const Decl& var;
     std::vector<UseEdge> usage;  // Current variable uses other variables.
-    std::vector<UseEdge> usedBy; // Current variable is used by other variables.
     int visitOrder = -1;         // This field reflects the declaration order of current variable in the file
     Color color{Color::WHITE};
 
@@ -226,7 +226,6 @@ struct DefUseGraph {
             CJC_ABORT();
         }
         userNode.usage.emplace_back(refExpr, pos, refName, usedNode);
-        usedNode.usedBy.emplace_back(refExpr, pos, refName, userNode);
     }
 
     void AddEdge(const Decl& user, const VarDeclAbstract& used)
@@ -234,7 +233,6 @@ struct DefUseGraph {
         auto& userNode = GetOrBuildNode(user);
         auto& usedNode = GetOrBuildNode(used);
         userNode.usage.emplace_back(usedNode);
-        usedNode.usedBy.emplace_back(userNode);
     }
     std::map<Ptr<const Decl>, OwnedPtr<DefNode>, CmpNodeByPos> nodes;
     VarWithPatternDeclMap vpdMap;
@@ -406,15 +404,14 @@ std::vector<Ptr<VarDecl>> GlobalVarChecker::GetDefaultInitVariables(Decl& outerD
 void GlobalVarChecker::CollectVarUsageBFS(const Node& node)
 {
     std::queue<Ptr<const Node>> worklist;
-    std::set<Ptr<const Node>> visited;
+    std::unordered_set<Ptr<const Node>> visited;
     worklist.push(&node);
     while (!worklist.empty()) {
         auto currNode = worklist.front();
         worklist.pop();
-        if (visited.count(currNode) > 0) {
+        if (!visited.emplace(currNode).second) {
             continue;
         }
-        visited.insert(currNode);
         CollectVarUsageBFSImpl(*currNode, worklist);
     }
 }
@@ -557,7 +554,7 @@ bool GlobalVarChecker::CheckInSameFile() const
  */
 bool GlobalVarChecker::CheckVarUsageForDefNode(const DefNode& defNode) const
 {
-    for (auto usage : defNode.usage) {
+    for (const auto& usage : defNode.usage) {
         auto& usedNode = usage.node;
         if (!IsInSameFile(defNode.var, usedNode.var)) {
             continue;

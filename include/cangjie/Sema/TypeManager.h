@@ -218,7 +218,7 @@ public:
     void RecordUsedExtend(AST::Ty& child, AST::Ty& interfaceTy);
     void RecordUsedGenericExtend(AST::Ty& boxedTy, Ptr<AST::ExtendDecl> extend = nullptr);
     void RemoveExtendFromMap(AST::ExtendDecl& ed);
-    std::unordered_set<Ptr<AST::Ty>> GetAllBoxedTys() const
+    const std::unordered_set<Ptr<AST::Ty>>& GetAllBoxedTys() const
     {
         return boxedTys;
     }
@@ -239,21 +239,17 @@ public:
         subtypeCache.clear();
     }
 
-    std::unordered_set<Ptr<AST::ExtendDecl>> GetBoxUsedExtends() const
+    const std::unordered_set<Ptr<AST::ExtendDecl>>& GetBoxUsedExtends() const
     {
         return boxUsedExtends;
     }
 
-    std::unordered_set<Ptr<AST::InheritableDecl>> GetBoxedNonGenericDecls() const
+    const std::unordered_set<Ptr<AST::InheritableDecl>>& GetBoxedNonGenericDecls() const
     {
         return boxedNonGenericDecls;
     }
 
-    std::unordered_set<Ptr<AST::ExtendDecl>> GetTyUsedExtends(Ptr<AST::Ty> ty) const
-    {
-        auto found = tyUsedExtends.find(ty);
-        return found != tyUsedExtends.end() ? found->second : std::unordered_set<Ptr<AST::ExtendDecl>>{};
-    }
+    const std::unordered_set<Ptr<AST::ExtendDecl>>& GetTyUsedExtends(Ptr<AST::Ty> ty) const;
 
     void ClearRecordUsedExtends()
     {
@@ -262,6 +258,8 @@ public:
         checkedTyExtendRelation.clear();
         boxedTys.clear();
     }
+    void ReleaseSemaQueryCaches();
+    void ReleasePostSemaCaches();
 
     /**
      * whether the classLike decl has func decl override the base funcDecl.

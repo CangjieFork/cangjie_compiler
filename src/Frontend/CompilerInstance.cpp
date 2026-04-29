@@ -971,6 +971,11 @@ bool CompilerInstance::GenerateCHIRForPkg(AST::Package& pkg)
 bool CompilerInstance::PerformCHIRCompilation()
 {
     bool ret = true;
+    if (typeManager != nullptr) {
+        Utils::ProfileRecorder recorder("Main Stage", "ReleasePostSemaCaches");
+        typeManager->ReleasePostSemaCaches();
+        Utils::FreeIdleMemoryToOS();
+    }
     auto sourcePackagesCHIR = GetSourcePackages();
     auto pkgsOrderedCHIR = packageManager->GetBuildOrders();
     for (auto& pkgsInfos : pkgsOrderedCHIR) {

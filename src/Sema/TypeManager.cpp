@@ -40,6 +40,34 @@ TypeManager::~TypeManager()
     Clear();
 }
 
+void TypeManager::ReleaseSemaQueryCaches()
+{
+    decltype(subtypeCache){}.swap(subtypeCache);
+    decltype(overrideOrShadowCache){}.swap(overrideOrShadowCache);
+    decltype(tyToSuperTysMap){}.swap(tyToSuperTysMap);
+    decltype(tyExtendInterfaceTyMap){}.swap(tyExtendInterfaceTyMap);
+    decltype(declInstantiationStatus){}.swap(declInstantiationStatus);
+}
+
+void TypeManager::ReleasePostSemaCaches()
+{
+    ReleaseSemaQueryCaches();
+    decltype(checkedTyExtendRelation){}.swap(checkedTyExtendRelation);
+    // These extend boxing records are consumed by semantic usage collection and generic instantiation.
+    // Release them only after those stages have completed.
+    decltype(boxedTys){}.swap(boxedTys);
+    decltype(boxUsedExtends){}.swap(boxUsedExtends);
+    decltype(boxedNonGenericDecls){}.swap(boxedNonGenericDecls);
+    decltype(tyUsedExtends){}.swap(tyUsedExtends);
+}
+
+const std::unordered_set<Ptr<ExtendDecl>>& TypeManager::GetTyUsedExtends(Ptr<Ty> ty) const
+{
+    static const std::unordered_set<Ptr<ExtendDecl>> empty;
+    auto found = tyUsedExtends.find(ty);
+    return found != tyUsedExtends.end() ? found->second : empty;
+}
+
 Ptr<PrimitiveTy> TypeManager::GetPrimitiveTy(TypeKind kind)
 {
     bool validParam = static_cast<int32_t>(kind) >= static_cast<int32_t>(TYPE_PRIMITIVE_MIN) &&
@@ -1432,24 +1460,27 @@ namespace {
 std::unordered_set<Ptr<AST::Ty>> GetAllUpperBounds(const GenericsTy& gty)
 {
     std::unordered_set<Ptr<AST::Ty>> ubs(gty.upperBounds.begin(), gty.upperBounds.end());
-    std::unordered_set<Ptr<AST::Ty>> newGens;
-    std::unordered_set<Ptr<AST::Ty>> newUbs;
-    for (auto ty : ubs) {
-        if (ty->IsGeneric()) {
-            newGens.insert(ty);
+    std::vector<Ptr<AST::Ty>> worklist;
+    std::unordered_set<Ptr<AST::Ty>> visited;
+    for (auto ty : gty.upperBounds) {
+        if (ty && ty->IsGeneric()) {
+            worklist.emplace_back(ty);
         }
     }
-    while (!newGens.empty()) {
-        for (auto ty : newGens) {
-            for (auto ub : RawStaticCast<GenericsTy*>(ty)->upperBounds) {
-                if (ub->IsGeneric()) {
-                    newUbs.insert(ub);
-                }
+    while (!worklist.empty()) {
+        auto ty = worklist.back();
+        worklist.pop_back();
+        if (!visited.emplace(ty).second) {
+            continue;
+        }
+        for (auto ub : RawStaticCast<GenericsTy*>(ty)->upperBounds) {
+            if (!ub || !ub->IsGeneric()) {
+                continue;
+            }
+            if (ubs.emplace(ub).second) {
+                worklist.emplace_back(ub);
             }
         }
-        ubs.insert(newUbs.begin(), newUbs.end());
-        newGens = newUbs;
-        newUbs.clear();
     }
     return ubs;
 }

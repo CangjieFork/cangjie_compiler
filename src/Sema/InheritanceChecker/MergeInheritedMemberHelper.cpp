@@ -30,24 +30,22 @@ void UpdateInconsistentTypes(
     member.inconsistentTypes.insert(inconsistentTypes.begin(), inconsistentTypes.end());
 }
 
-std::vector<std::unordered_set<Ptr<Ty>>> UpdateUpperBoundsSet(
-    TypeManager& tyMgr, const std::vector<std::unordered_set<Ptr<Ty>>>& upperBounds, const TypeSubst& typeMapping)
+void UpdateUpperBoundsSet(
+    TypeManager& tyMgr, std::vector<std::unordered_set<Ptr<Ty>>>& upperBounds, const TypeSubst& typeMapping)
 {
     if (typeMapping.empty() ||
-        std::all_of(upperBounds.begin(), upperBounds.end(), [](auto it) { return it.empty(); })) {
+        std::all_of(upperBounds.begin(), upperBounds.end(), [](const auto& it) { return it.empty(); })) {
         // If typeMapping is empty or 'upperBounds' is empty or
         // All elements in 'upperBounds' are empty, quick quit.
-        return upperBounds;
+        return;
     }
-    std::vector<std::unordered_set<Ptr<Ty>>> allUpperBounds;
-    for (const auto& uppers : std::as_const(upperBounds)) {
+    for (auto& uppers : upperBounds) {
         std::unordered_set<Ptr<Ty>> newUppers;
         for (auto it : uppers) {
             newUppers.emplace(tyMgr.GetInstantiatedTy(it, typeMapping));
         }
-        allUpperBounds.emplace_back(newUppers);
+        uppers = std::move(newUppers);
     }
-    return allUpperBounds;
 }
 
 // Caller guarantees 'src' and 'other' are both generic function.
@@ -217,17 +215,26 @@ MemberSignature StructInheritanceChecker::UpdateInheritedMemberIfNeeded(
 void StructInheritanceChecker::MergeInheritedMembers(
     MemberMap& members, const MemberMap& otherMembers, Ty& structTy, bool inheritedInterfaces)
 {
+    if (otherMembers.empty()) {
+        return;
+    }
     MultiTypeSubst mts;
     typeManager.GenerateGenericMapping(mts, structTy);
     auto typeMapping = MultiTypeSubstToTypeSubst(mts);
     for (auto& member : otherMembers) {
+        if (typeMapping.empty() && !inheritedInterfaces) {
+            UpdateInheritedMemberIfNeeded(members, member.second, false);
+            continue;
+        }
         auto memberSig = member.second;
         if (inheritedInterfaces) {
             memberSig.isInheritedInterface = true;
         }
-        memberSig.ty = typeManager.GetInstantiatedTy(memberSig.ty, typeMapping);
-        memberSig.structTy = typeManager.GetInstantiatedTy(memberSig.structTy, typeMapping);
-        memberSig.upperBounds = UpdateUpperBoundsSet(typeManager, memberSig.upperBounds, typeMapping);
+        if (!typeMapping.empty()) {
+            memberSig.ty = typeManager.GetInstantiatedTy(memberSig.ty, typeMapping);
+            memberSig.structTy = typeManager.GetInstantiatedTy(memberSig.structTy, typeMapping);
+            UpdateUpperBoundsSet(typeManager, memberSig.upperBounds, typeMapping);
+        }
         UpdateInheritedMemberIfNeeded(members, memberSig, inheritedInterfaces);
     }
 }

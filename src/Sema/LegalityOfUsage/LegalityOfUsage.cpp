@@ -22,78 +22,105 @@ namespace Cangjie {
 using namespace AST;
 
 namespace {
-void SetFuncBodyCaptureKind(FuncBody& fb)
+bool HasCallExpr(Ptr<Node> body)
 {
-    if (!fb.body) {
-        return;
-    }
-    // Collect mutable variables declared in the function `fb`.
+    bool hasCall = false;
+    Walker(body, [&hasCall](Ptr<Node> n) {
+        if (n->astKind == ASTKind::CALL_EXPR) {
+            hasCall = true;
+            return VisitAction::STOP_NOW;
+        }
+        return VisitAction::WALK_CHILDREN;
+    }).Walk();
+    return hasCall;
+}
+
+std::unordered_set<Ptr<Decl>> CollectMutableVars(Ptr<Node> body)
+{
     std::unordered_set<Ptr<Decl>> mutVars;
-    Walker(fb.body.get(), [&mutVars](Ptr<Node> n) {
+    Walker(body, [&mutVars](Ptr<Node> n) {
         if (auto varDecl = DynamicCast<VarDecl*>(n); varDecl && varDecl->isVar) {
             mutVars.emplace(varDecl);
         }
         return VisitAction::WALK_CHILDREN;
     }).Walk();
-    auto visitor = [&fb, &mutVars](Ptr<const Node> n) {
-        if (n->astKind != ASTKind::CALL_EXPR) {
-            return VisitAction::WALK_CHILDREN;
+    return mutVars;
+}
+
+Ptr<FuncBody> GetCapturedTargetFuncBody(const CallExpr& ce)
+{
+    if (auto refExpr = DynamicCast<RefExpr*>(ce.baseFunc.get()); refExpr) {
+        auto target = DynamicCast<FuncDecl*>(refExpr->ref.target);
+        bool needCollect =
+            target && target->funcBody && target->funcBody->captureKind != CaptureKind::NO_CAPTURE;
+        return needCollect ? target->funcBody.get() : nullptr;
+    }
+    if (auto lambdaExpr = DynamicCast<LambdaExpr*>(ce.baseFunc.get()); lambdaExpr) {
+        CJC_ASSERT(lambdaExpr->funcBody); // Parser guarantees.
+        if (lambdaExpr->funcBody->captureKind != CaptureKind::NO_CAPTURE) {
+            return lambdaExpr->funcBody.get();
         }
-        // In the function body `fb`, if it calls some function that has captured some mutable variables,
-        // we store the called function's body in `targetFuncBody`.
-        auto& ce = static_cast<const CallExpr&>(*n);
-        Ptr<FuncBody> targetFuncBody = nullptr;
-        if (auto refExpr = DynamicCast<RefExpr*>(ce.baseFunc.get()); refExpr) {
-            if (auto target = DynamicCast<FuncDecl*>(refExpr->ref.target);
-                target && target->funcBody && target->funcBody->captureKind != CaptureKind::NO_CAPTURE) {
-                targetFuncBody = target->funcBody.get();
-            }
-        } else if (auto lambdaExpr = DynamicCast<LambdaExpr*>(ce.baseFunc.get()); lambdaExpr) {
-            CJC_ASSERT(lambdaExpr->funcBody); // Parser guarantees.
-            if (lambdaExpr->funcBody->captureKind != CaptureKind::NO_CAPTURE) {
-                targetFuncBody = lambdaExpr->funcBody.get();
-            }
-        }
-        // If the called function captures mutable variables, we check whether the variables are defined inside `fb`.
-        if (targetFuncBody) {
-            std::copy_if(targetFuncBody->capturedVars.begin(), targetFuncBody->capturedVars.end(),
-                std::inserter(fb.capturedVars, fb.capturedVars.begin()),
-                [&mutVars](
-                    Ptr<const NameReferenceExpr> varRe) { return mutVars.find(varRe->GetTarget()) == mutVars.cend(); });
-            if (!fb.capturedVars.empty()) {
-                fb.captureKind = CaptureKind::TRANSITIVE_CAPTURE;
-                return VisitAction::STOP_NOW;
-            }
-        }
+    }
+    return nullptr;
+}
+
+VisitAction SetTransitiveCaptureKind(
+    FuncBody& fb, const std::unordered_set<Ptr<Decl>>& mutVars, Ptr<const Node> n)
+{
+    if (n->astKind != ASTKind::CALL_EXPR) {
         return VisitAction::WALK_CHILDREN;
-    };
-    Walker walker(fb.body.get(), visitor);
-    walker.Walk();
+    }
+    auto targetFuncBody = GetCapturedTargetFuncBody(static_cast<const CallExpr&>(*n));
+    if (!targetFuncBody) {
+        return VisitAction::WALK_CHILDREN;
+    }
+    std::copy_if(targetFuncBody->capturedVars.begin(), targetFuncBody->capturedVars.end(),
+        std::inserter(fb.capturedVars, fb.capturedVars.begin()),
+        [&mutVars](Ptr<const NameReferenceExpr> varRe) {
+            return mutVars.find(varRe->GetTarget()) == mutVars.cend();
+        });
+    if (fb.capturedVars.empty()) {
+        return VisitAction::WALK_CHILDREN;
+    }
+    fb.captureKind = CaptureKind::TRANSITIVE_CAPTURE;
+    return VisitAction::STOP_NOW;
+}
+
+void SetFuncBodyCaptureKind(FuncBody& fb)
+{
+    if (!fb.body || !HasCallExpr(fb.body.get())) {
+        return;
+    }
+    auto mutVars = CollectMutableVars(fb.body.get());
+    Walker(fb.body.get(), [&fb, &mutVars](Ptr<const Node> n) {
+        return SetTransitiveCaptureKind(fb, mutVars, n);
+    }).Walk();
+}
+
+template <typename Func> void RunUsageCheck(const std::string& subtitle, Func func)
+{
+    Utils::ProfileRecorder subRecorder("CheckLegalityOfUsage", subtitle);
+    func();
 }
 } // namespace
 
 void TypeChecker::TypeCheckerImpl::CheckLegalityOfUsage(ASTContext& ctx, AST::Package& pkg)
 {
     Utils::ProfileRecorder recorder("Post TypeCheck", "CheckLegalityOfUsage");
-    // Check whether value type decl contains value type recursive dependency.
-    CheckValueTypeRecursive(pkg);
-    // Check legality of reference usage.
-    CheckLegalityOfReference(ctx, pkg);
-    CheckStaticMembersWithGeneric(pkg);
-    CheckUsageOfDeprecated(pkg);
-    // Check initialization.
+    RunUsageCheck("CheckValueTypeRecursive", [this, &pkg]() { CheckValueTypeRecursive(pkg); });
+    RunUsageCheck("CheckLegalityOfReference", [this, &ctx, &pkg]() { CheckLegalityOfReference(ctx, pkg); });
+    RunUsageCheck("CheckStaticMembersWithGeneric", [this, &pkg]() { CheckStaticMembersWithGeneric(pkg); });
+    RunUsageCheck("CheckUsageOfDeprecated", [this, &pkg]() { CheckUsageOfDeprecated(pkg); });
     if (!ci->invocation.globalOptions.disableSemaVic) {
-        InitializationChecker::Check(*ci, ctx, &pkg);
+        RunUsageCheck("InitializationChecker", [this, &ctx, &pkg]() { InitializationChecker::Check(*ci, ctx, &pkg); });
     }
-    CheckGlobalVarInitialization(ctx, pkg);
-    // CFunc must be called in an unsafe block.
-    CheckLegalityOfUnsafeAndInout(pkg);
-    // Check structure declaration inheritance.
-    CheckInheritance(pkg);
-    CheckClosures(ctx, pkg);
-    CheckAccessLevelValidity(pkg);
-    CheckAllInvocationHasImpl(ctx, pkg);
-    CheckSubscriptLegality(pkg);
+    RunUsageCheck("CheckGlobalVarInitialization", [this, &ctx, &pkg]() { CheckGlobalVarInitialization(ctx, pkg); });
+    RunUsageCheck("CheckLegalityOfUnsafeAndInout", [this, &pkg]() { CheckLegalityOfUnsafeAndInout(pkg); });
+    RunUsageCheck("CheckInheritance", [this, &pkg]() { CheckInheritance(pkg); });
+    RunUsageCheck("CheckClosures", [this, &ctx, &pkg]() { CheckClosures(ctx, pkg); });
+    RunUsageCheck("CheckAccessLevelValidity", [this, &pkg]() { CheckAccessLevelValidity(pkg); });
+    RunUsageCheck("CheckAllInvocationHasImpl", [this, &ctx, &pkg]() { CheckAllInvocationHasImpl(ctx, pkg); });
+    RunUsageCheck("CheckSubscriptLegality", [this, &pkg]() { CheckSubscriptLegality(pkg); });
 }
 
 void TypeChecker::TypeCheckerImpl::CheckStaticMemberWithGeneric(
@@ -183,7 +210,7 @@ void TypeChecker::TypeCheckerImpl::CheckClosures(const ASTContext& ctx, Node& no
         }
         return VisitAction::WALK_CHILDREN;
     }).Walk();
-    // 2. set all funcBody capture status.
+    // 2. set all funcBody capture status after every direct capture has been marked.
     Walker(&node, nullptr, [](auto node) {
         if (auto fb = DynamicCast<FuncBody*>(node); fb) {
             SetFuncBodyCaptureKind(*fb);

@@ -108,7 +108,9 @@ float UserMemoryUsage::Sampling()
     hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, curPid);
     CJC_ASSERT(hProcess && "Get process handle failed");
     if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
-        return float(pmc.WorkingSetSize) / KILOBYTE / KILOBYTE;
+        float usage = float(pmc.WorkingSetSize) / KILOBYTE / KILOBYTE;
+        CloseHandle(hProcess);
+        return usage;
     } else {
         CJC_ASSERT(false && "Get process memory info failed.");
     }

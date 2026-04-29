@@ -160,9 +160,12 @@ TypeSubst MultiTypeSubstToTypeSubst(const MultiTypeSubst& mts)
 {
     TypeSubst m;
     std::for_each(mts.cbegin(), mts.cend(), [&m](auto& kv) {
-        auto values = kv.second;
+        const auto& values = kv.second;
         if (values.size() > 1) {
-            values.erase(kv.first); // Avoid choosing self mapping when there are more than one candidates.
+            auto candidates = values;
+            candidates.erase(kv.first); // Avoid choosing self mapping when there are more than one candidates.
+            m[kv.first] = *candidates.begin();
+            return;
         }
         m[kv.first] = *values.begin();
     });

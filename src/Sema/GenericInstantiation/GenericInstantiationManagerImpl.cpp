@@ -626,7 +626,7 @@ Ptr<Decl> GIM::GenericInstantiationManagerImpl::FindInCache(const GenericInfo& i
 void GIM::GenericInstantiationManagerImpl::WalkNonGenericExtendedType()
 {
 #ifdef CANGJIE_CODEGEN_CJNATIVE_BACKEND
-    auto extends = typeManager.GetBoxUsedExtends();
+    const auto& extends = typeManager.GetBoxUsedExtends();
     for (auto extend : extends) {
         // Should have same ignore condition with 'CollectExtendedInterfaceHelper'.
         // UG fix here do not box decls any more.
@@ -638,7 +638,7 @@ void GIM::GenericInstantiationManagerImpl::WalkNonGenericExtendedType()
             Walker(type.get(), instantiationWalkerID, instantiator, contextReset).Walk();
         }
     }
-    auto decls = typeManager.GetBoxedNonGenericDecls();
+    const auto& decls = typeManager.GetBoxedNonGenericDecls();
     for (auto id : decls) {
         for (auto& type : id->inheritedTypes) {
             Walker(type.get(), instantiationWalkerID, instantiator, contextReset).Walk();
