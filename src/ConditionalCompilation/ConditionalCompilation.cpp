@@ -42,6 +42,8 @@ const std::string DEBUG_STR = "debug";
 const std::string TEST_STR = "test";
 const std::string ENV_STR = "env";
 const std::string CONDITION_TRUE = "1"; // Used in debug and test condition variable.
+constexpr size_t CACHE_SEPARATOR_SIZE = sizeof('\0');
+constexpr size_t JUDGE_CONDITION_CACHE_KEY_EXTRA_SIZE = CACHE_SEPARATOR_SIZE + sizeof(char) + CACHE_SEPARATOR_SIZE;
 // Condition value map.
 const std::unordered_set<std::string> TARGET_CONDITION = {
     BACKEND_STR,
@@ -147,7 +149,7 @@ template <typename T, typename Pred> void EraseConditionalIf(T& container, Pred 
 std::string MakeJudgeConditionCacheKey(const std::string& condition, TokenKind op, const std::string& right)
 {
     std::string key;
-    key.reserve(condition.size() + right.size() + 3);
+    key.reserve(condition.size() + right.size() + JUDGE_CONDITION_CACHE_KEY_EXTRA_SIZE);
     key.append(condition);
     key.push_back('\0');
     key.push_back(static_cast<char>(static_cast<unsigned char>(op)));
@@ -413,7 +415,7 @@ bool ConditionalCompilationImpl::Eval(const BinaryExpr& expr, const std::string&
     }
 }
 
-bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
+bool ConditionalCompilationImpl::CheckJudgeBinaryExpr(const BinaryExpr& be) const
 {
     if (be.leftExpr == nullptr || be.rightExpr == nullptr) {
         (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, be.begin);
@@ -434,6 +436,15 @@ bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
             DiagKindRefactor::conditional_compilation_invalid_condition_value, be.rightExpr->begin);
         return false;
     }
+    return true;
+}
+
+bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
+{
+    if (!CheckJudgeBinaryExpr(be)) {
+        return false;
+    }
+    auto right = RawStaticCast<LitConstExpr*>(be.rightExpr.get());
     auto left = RawStaticCast<RefExpr*>(be.leftExpr.get());
     const auto& conditionStr = left->ref.identifier.Val();
     const auto& rightValue = right->stringValue;

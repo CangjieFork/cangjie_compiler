@@ -95,6 +95,7 @@ private:
     bool EvalRefExpr(const RefExpr& re) const;
 
     bool EvalLogicBinaryExpr(const BinaryExpr& be);
+    bool CheckJudgeBinaryExpr(const BinaryExpr& be) const;
     bool EvalJudgeBinaryExpr(const BinaryExpr& be);
 
     std::string RefreshVersionStr(std::string& version) const
