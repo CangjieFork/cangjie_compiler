@@ -87,6 +87,20 @@ TEST_F(ConditionalCompilationTest, packagePaths_for_lsp)
     instance->PerformConditionCompile();
 }
 
+TEST_F(ConditionalCompilationTest, invalid_condition_value_after_short_circuit)
+{
+    invocation.globalOptions.enableCompileDebug = true;
+    instance = std::make_unique<TestCompilerInstance>(invocation, diag);
+    instance->code = R"(@When[debug || os == "${x}"]
+func foo() {}
+)";
+
+    instance->Compile(CompileStage::PARSE);
+    instance->PerformConditionCompile();
+
+    EXPECT_EQ(diag.GetErrorCount(), 1);
+}
+
 #ifndef _WIN32
 TEST_F(ConditionalCompilationTest, cfgPaths_no_file_for_lsp)
 {

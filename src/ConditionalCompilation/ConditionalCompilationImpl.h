@@ -94,6 +94,15 @@ private:
     bool EvalUnaryExpr(const UnaryExpr& ue) const;
     bool EvalRefExpr(const RefExpr& re) const;
 
+    bool CheckConditionExpr(const Expr& condition);
+    bool CheckBinaryExpr(const BinaryExpr& be);
+    bool CheckParenExpr(const ParenExpr& pe);
+    bool CheckUnaryExpr(const UnaryExpr& ue) const;
+    bool CheckRefExpr(const RefExpr& re) const;
+    bool CheckJudgeConditionExpr(const BinaryExpr& be);
+    bool CheckConditionOp(const BinaryExpr& be, const std::string& conditionStr) const;
+    const std::string* GetDebugOrTestRelatedInfo(const RefExpr& re, const Position& diagnosePos) const;
+
     bool EvalLogicBinaryExpr(const BinaryExpr& be);
     bool CheckJudgeBinaryExpr(const BinaryExpr& be) const;
     bool EvalJudgeBinaryExpr(const BinaryExpr& be);
