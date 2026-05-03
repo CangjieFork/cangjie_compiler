@@ -15,6 +15,7 @@
 
 #include "TypeCheckerImpl.h"
 
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -104,9 +105,15 @@ private:
         AST::Expr& expr, const std::unordered_set<Ptr<AST::Decl>>& uninitsDecls);
     bool IsOrderRelated(const AST::Node& checkNode, AST::Node& targetNode, bool isClassLikeOrStruct) const;
     bool IsVarUsedBeforeDefinition(const AST::Node& checkNode, AST::Node& targetNode) const;
+    bool IsUsedInInitFunction(const AST::Expr& expr) const;
+    bool IsMemberUseOutsideCtor(const AST::Expr& expr, const AST::Decl& decl) const;
+    bool IsInDifferentFunction(const AST::Expr& usage, const AST::Decl& target) const;
     bool CheckIllegalMemberAccess(const AST::Expr& expr, const AST::Decl& target, const AST::Node& targetStruct);
     bool CheckIllegalRefExprAccess(
         const AST::RefExpr& re, const AST::Symbol& toplevelSymOfRe, const AST::Symbol& toplevelSymOfTarget);
+    AST::Symbol* GetCurSymbolByKindCached(SymbolKind symbolKind, const std::string& scopeName) const;
+    AST::Symbol* GetOutMostSymbolCached(SymbolKind symbolKind, const std::string& scopeName) const;
+    AST::Symbol* GetCurOuterDeclOfScopeLevelXCached(const AST::Node& checkNode, uint32_t scopeLevel) const;
 
     void UpdateScopeStatus(const AST::Node& node);
     void UpdateInitializationStatus(const AST::AssignExpr& assign, AST::Decl& decl);
@@ -193,6 +200,11 @@ private:
     size_t optionalCtxDepth{0};
     /** When current is inside the tryBlock, 'tryDepth' plus 1. */
     size_t tryDepth{0};
+    using SymbolLookupCache =
+        std::array<std::unordered_map<std::string, AST::Symbol*>, static_cast<size_t>(SymbolKind::TOPLEVEL) + 1>;
+    mutable SymbolLookupCache curSymbolCache;
+    mutable SymbolLookupCache outMostSymbolCache;
+    mutable std::unordered_map<std::string, std::unordered_map<uint32_t, AST::Symbol*>> outerDeclOfScopeLevelCache;
 };
 } // namespace Cangjie
 #endif

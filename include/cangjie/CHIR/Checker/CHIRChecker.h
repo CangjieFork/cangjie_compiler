@@ -34,7 +34,6 @@ private:
     struct VirMethodFullContext {
         std::string srcCodeIdentifier;
         FuncType* originalFuncType{nullptr};
-        std::vector<GenericType*> genericTypeParams;
         size_t offset{0};
         Type* thisType{nullptr};
         ClassType* srcParentType{nullptr};

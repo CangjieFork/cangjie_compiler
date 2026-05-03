@@ -52,6 +52,7 @@ public:
     // 2. src code imported global var
     std::vector<GlobalVar*> GetGlobalVarsWithInit(bool includeSrcCodeImported = true) const;
     std::vector<GlobalVar*> GetGlobalVars() const;
+    const std::vector<GlobalVar*>& GetGlobalVarsRef() const;
     void SetAllGlobalVars(std::vector<GlobalVar*>&& vars);
 
     // ===--------------------------------------------------------------------===//
@@ -70,6 +71,7 @@ public:
     // 3. instantiated function but its generic decl is from imported package
     std::vector<Function*> GetGlobalFuncsWithBody(bool includeSrcCodeImported = true) const;
     std::vector<Function*> GetGlobalFunctions(bool includePureAbstract = false) const;
+    const std::vector<Function*>& GetGlobalFunctionsRef() const;
     void SetAllGlobalFuncs(std::vector<Function*>&& funcs);
 
     Function* GetPackageInitFunc() const;
@@ -87,6 +89,7 @@ public:
 
     void AddImportedStruct(StructDef* item);
     std::vector<StructDef*> GetImportedStructs() const;
+    const std::vector<StructDef*>& GetImportedStructsRef() const;
     void SetImportedStructs(std::vector<StructDef*>&& s);
 
     std::vector<StructDef*> GetAllStructDef() const;
@@ -101,6 +104,7 @@ public:
 
     void AddImportedClass(ClassDef* item);
     std::vector<ClassDef*> GetImportedClasses() const;
+    const std::vector<ClassDef*>& GetImportedClassesRef() const;
     void SetImportedClasses(std::vector<ClassDef*>&& s);
 
     std::vector<ClassDef*> GetAllClassDef() const;
@@ -115,6 +119,7 @@ public:
 
     void AddImportedEnum(EnumDef* item);
     std::vector<EnumDef*> GetImportedEnums() const;
+    const std::vector<EnumDef*>& GetImportedEnumsRef() const;
     void SetImportedEnums(std::vector<EnumDef*>&& s);
 
     std::vector<EnumDef*> GetAllEnumDef() const;
@@ -129,6 +134,7 @@ public:
 
     void AddImportedExtend(ExtendDef* item);
     std::vector<ExtendDef*> GetImportedExtends() const;
+    const std::vector<ExtendDef*>& GetImportedExtendsRef() const;
     void SetImportedExtends(std::vector<ExtendDef*>&& items);
 
     std::vector<ExtendDef*> GetAllExtendDef() const;

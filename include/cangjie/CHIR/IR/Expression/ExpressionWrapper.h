@@ -40,6 +40,7 @@ public:
     std::vector<Value*> GetArgs() const;
     Type* GetThisType() const;
     std::vector<Type*> GetInstantiatedTypeArgs() const;
+    const std::vector<Type*>& GetInstantiatedTypeArgsRef() const;
 
 private:
     const FuncCall* expr;
@@ -67,6 +68,7 @@ public:
     explicit DynamicDispatchBase(const DynamicDispatchWithException* exprE);
 
     std::vector<GenericType*> GetGenericTypeParams() const;
+    const std::vector<GenericType*>& GetGenericTypeParamsRef() const;
     std::string GetMethodName() const;
     FuncType* GetMethodType() const;
     size_t GetVirtualMethodOffset() const;
@@ -157,6 +159,7 @@ public:
 
     IntrinsicKind GetIntrinsicKind() const;
     std::vector<Type*> GetInstantiatedTypeArgs() const;
+    const std::vector<Type*>& GetInstantiatedTypeArgsRef() const;
     
 private:
     const Intrinsic* expr;

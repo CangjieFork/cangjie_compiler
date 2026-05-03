@@ -95,52 +95,14 @@ bool IsRelatedTypeDecl(const Decl& curComposite, const Decl& outerDeclOfTarget)
     return &curComposite == &outerDeclOfTarget;
 }
 
-bool IsUsedInInitFunction(const ASTContext& ctx, const Expr& expr)
+void GetUnInitsInExpr(Ptr<Node> node, std::unordered_set<Ptr<Decl>>& unInitedNodes,
+    const std::unordered_set<Ptr<Decl>>* excludedNodes = nullptr)
 {
-    Ptr<Decl> decl = expr.GetTarget();
-    bool inInitFunction = false;
-    if (decl != nullptr && decl->TestAnyAttr(Attribute::IN_STRUCT, Attribute::IN_CLASSLIKE)) {
-        Symbol* symOfVdStruct = ScopeManager::GetCurSymbolByKind(SymbolKind::STRUCT, ctx, decl->scopeName);
-        Symbol* symOfExprStruct = ScopeManager::GetCurSymbolByKind(SymbolKind::STRUCT, ctx, expr.scopeName);
-        Symbol* symOfExprFunc = ScopeManager::GetOutMostSymbol(ctx, SymbolKind::FUNC, expr.scopeName);
-        if (symOfExprStruct != nullptr && symOfVdStruct != nullptr && symOfExprFunc != nullptr) {
-            auto structOfExpr = symOfExprStruct->node;
-            auto structOfVd = symOfVdStruct->node;
-            CJC_NULLPTR_CHECK(symOfExprFunc->node);
-            auto currentFunc = symOfExprFunc->node;
-            bool sameStaticStatus = currentFunc->TestAttr(Attribute::STATIC) == decl->TestAttr(Attribute::STATIC);
-            if (currentFunc->TestAttr(Attribute::CONSTRUCTOR) && sameStaticStatus &&
-                IsRelatedTypeDecl(*StaticCast<Decl>(structOfExpr), *StaticCast<Decl>(structOfVd))) {
-                inInitFunction = true;
-            }
-        }
-    }
-    return inInitFunction;
-}
-
-void GetInitsInExpr(Ptr<Node> node, std::unordered_set<Ptr<Decl>>& initedNodes)
-{
-    if (!node) {
-        return;
-    }
-    auto visitor = [&initedNodes](Ptr<Node> n) {
+    auto visitor = [&unInitedNodes, excludedNodes](Ptr<Node> n) {
         auto target = n->GetTarget();
         if (auto expr = DynamicCast<Expr*>(n);
-            expr && expr->IsReferenceExpr() && target && target->TestAttr(Attribute::INITIALIZED)) {
-            initedNodes.insert(target);
-        }
-        return VisitAction::WALK_CHILDREN;
-    };
-    Walker walker(node, visitor);
-    walker.Walk();
-}
-
-void GetUnInitsInExpr(Ptr<Node> node, std::unordered_set<Ptr<Decl>>& unInitedNodes)
-{
-    auto visitor = [&unInitedNodes](Ptr<Node> n) {
-        auto target = n->GetTarget();
-        if (auto expr = DynamicCast<Expr*>(n);
-            expr && expr->IsReferenceExpr() && target && !target->TestAttr(Attribute::INITIALIZED)) {
+            expr && expr->IsReferenceExpr() && target && !target->TestAttr(Attribute::INITIALIZED) &&
+            (excludedNodes == nullptr || excludedNodes->count(target) == 0)) {
             unInitedNodes.insert(target);
         }
         return VisitAction::WALK_CHILDREN;
@@ -149,14 +111,29 @@ void GetUnInitsInExpr(Ptr<Node> node, std::unordered_set<Ptr<Decl>>& unInitedNod
     walker.Walk();
 }
 
-void GetLocalUnInitsInExpr(const Ptr<Node>& node, std::unordered_set<Ptr<Decl>>& localUnInits)
+std::unordered_set<Ptr<Decl>> CollectConditionalInitializedDecls(
+    Ptr<Node> node, const std::unordered_set<Ptr<Decl>>& uninitsDecls, const std::unordered_set<Decl*>& patternVars)
 {
-    Walker(node, [&localUnInits](auto node) {
-        if (auto vda = DynamicCast<VarDeclAbstract*>(node); vda && !vda->TestAttr(Attribute::INITIALIZED)) {
-            localUnInits.emplace(vda);
+    std::unordered_set<Ptr<Decl>> conditionalInitialized;
+    if (!node || uninitsDecls.empty()) {
+        return conditionalInitialized;
+    }
+    conditionalInitialized.reserve(uninitsDecls.size());
+    auto visitor = [&conditionalInitialized, &uninitsDecls, &patternVars](Ptr<Node> n) {
+        auto target = n->GetTarget();
+        if (auto expr = DynamicCast<Expr*>(n);
+            expr && expr->IsReferenceExpr() && target && target->TestAttr(Attribute::INITIALIZED) &&
+            uninitsDecls.count(target) != 0) {
+            conditionalInitialized.insert(target);
+            if (patternVars.count(target.get()) == 0) {
+                target->DisableAttr(Attribute::INITIALIZED);
+            }
         }
         return VisitAction::WALK_CHILDREN;
-    }).Walk();
+    };
+    Walker walker(node, visitor);
+    walker.Walk();
+    return conditionalInitialized;
 }
 
 // In common classes and structs cannot assign values to common let fields in any constructor
@@ -177,42 +154,6 @@ inline bool NotAssignableVariable(const VarDecl& vd, bool inInitFunction)
 inline bool CanSkipInitCheck(const Node& node)
 {
     return node.TestAnyAttr(Attribute::IMPORTED, Attribute::FOREIGN, Attribute::ENUM_CONSTRUCTOR);
-}
-
-// Check whether member variable is used in member function/property except constructor.
-bool IsMemberUseOutsideCtor(const ASTContext& ctx, const Expr& expr, const Decl& decl)
-{
-    bool isNotMemberVar = !decl.outerDecl || !decl.outerDecl->IsNominalDecl() || decl.astKind != ASTKind::VAR_DECL;
-    if (isNotMemberVar) {
-        return false;
-    }
-    auto outerMostSym = ScopeManager::GetOutMostSymbol(ctx, SymbolKind::FUNC, expr.scopeName);
-    auto outerMostFunc = outerMostSym ? StaticCast<FuncDecl*>(outerMostSym->node) : nullptr;
-    return outerMostFunc && !outerMostFunc->TestAttr(Attribute::CONSTRUCTOR);
-}
-
-bool IsInDifferentFunction(const ASTContext& ctx, const Expr& usage, const Decl& target)
-{
-    auto usageSym = ScopeManager::GetCurSymbolByKind(SymbolKind::FUNC_LIKE, ctx, usage.scopeName);
-    if (usageSym == nullptr || IsGlobalOrStaticVar(target)) {
-        return false;
-    }
-    auto declSym = ScopeManager::GetCurSymbolByKind(SymbolKind::FUNC_LIKE, ctx, target.scopeName);
-    if (declSym != nullptr) {
-        // Local variable usage.
-        return usageSym != declSym;
-    }
-    if (target.outerDecl == nullptr) {
-        // Local variable declared in the initializer of a global variable.
-        return true;
-    }
-    if (auto usageDecl = DynamicCast<FuncDecl*>(usageSym->node);
-        usageDecl && !usageDecl->TestAttr(Attribute::CONSTRUCTOR)) {
-        // Member variable usage.
-        return target.outerDecl != usageDecl->outerDecl && usageSym != declSym;
-    }
-    // Used in lambda which means capture the member variable.
-    return usageSym->node->astKind == ASTKind::LAMBDA_EXPR;
 }
 
 bool IsAssignLetDefinedOuterLoop(const ASTContext& ctx, const VarDecl& vd, const Expr& curExpr)
@@ -312,7 +253,107 @@ bool FromCommonPart(const Decl& decl)
     return decl.TestAttr(Attribute::FROM_COMMON_PART) ||
         (decl.curFile && decl.curFile->TestAttr(Attribute::FROM_COMMON_PART));
 }
+
 } // namespace
+
+Symbol* InitializationChecker::GetCurSymbolByKindCached(SymbolKind symbolKind, const std::string& scopeName) const
+{
+    auto& cache = curSymbolCache[static_cast<size_t>(symbolKind)];
+    auto found = cache.find(scopeName);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    auto symbol = ScopeManager::GetCurSymbolByKind(symbolKind, ctx, scopeName);
+    cache.emplace(scopeName, symbol);
+    return symbol;
+}
+
+Symbol* InitializationChecker::GetOutMostSymbolCached(SymbolKind symbolKind, const std::string& scopeName) const
+{
+    auto& cache = outMostSymbolCache[static_cast<size_t>(symbolKind)];
+    auto found = cache.find(scopeName);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    auto symbol = ScopeManager::GetOutMostSymbol(ctx, symbolKind, scopeName);
+    cache.emplace(scopeName, symbol);
+    return symbol;
+}
+
+Symbol* InitializationChecker::GetCurOuterDeclOfScopeLevelXCached(const Node& checkNode, uint32_t scopeLevel) const
+{
+    if (checkNode.scopeLevel < scopeLevel) {
+        return nullptr;
+    }
+    auto scopeIt = outerDeclOfScopeLevelCache.find(checkNode.scopeName);
+    if (scopeIt != outerDeclOfScopeLevelCache.end()) {
+        auto levelIt = scopeIt->second.find(scopeLevel);
+        if (levelIt != scopeIt->second.end()) {
+            return levelIt->second;
+        }
+    }
+    auto symbol = ScopeManager::GetCurOuterDeclOfScopeLevelX(ctx, checkNode, scopeLevel);
+    outerDeclOfScopeLevelCache[checkNode.scopeName].emplace(scopeLevel, symbol);
+    return symbol;
+}
+
+bool InitializationChecker::IsUsedInInitFunction(const Expr& expr) const
+{
+    Ptr<Decl> decl = expr.GetTarget();
+    bool inInitFunction = false;
+    if (decl != nullptr && decl->TestAnyAttr(Attribute::IN_STRUCT, Attribute::IN_CLASSLIKE)) {
+        Symbol* symOfVdStruct = GetCurSymbolByKindCached(SymbolKind::STRUCT, decl->scopeName);
+        Symbol* symOfExprStruct = GetCurSymbolByKindCached(SymbolKind::STRUCT, expr.scopeName);
+        Symbol* symOfExprFunc = GetOutMostSymbolCached(SymbolKind::FUNC, expr.scopeName);
+        if (symOfExprStruct != nullptr && symOfVdStruct != nullptr && symOfExprFunc != nullptr) {
+            auto structOfExpr = symOfExprStruct->node;
+            auto structOfVd = symOfVdStruct->node;
+            CJC_NULLPTR_CHECK(symOfExprFunc->node);
+            auto currentFunc = symOfExprFunc->node;
+            bool sameStaticStatus = currentFunc->TestAttr(Attribute::STATIC) == decl->TestAttr(Attribute::STATIC);
+            if (currentFunc->TestAttr(Attribute::CONSTRUCTOR) && sameStaticStatus &&
+                IsRelatedTypeDecl(*StaticCast<Decl>(structOfExpr), *StaticCast<Decl>(structOfVd))) {
+                inInitFunction = true;
+            }
+        }
+    }
+    return inInitFunction;
+}
+
+bool InitializationChecker::IsMemberUseOutsideCtor(const Expr& expr, const Decl& decl) const
+{
+    bool isNotMemberVar = !decl.outerDecl || !decl.outerDecl->IsNominalDecl() || decl.astKind != ASTKind::VAR_DECL;
+    if (isNotMemberVar) {
+        return false;
+    }
+    auto outerMostSym = GetOutMostSymbolCached(SymbolKind::FUNC, expr.scopeName);
+    auto outerMostFunc = outerMostSym ? StaticCast<FuncDecl*>(outerMostSym->node) : nullptr;
+    return outerMostFunc && !outerMostFunc->TestAttr(Attribute::CONSTRUCTOR);
+}
+
+bool InitializationChecker::IsInDifferentFunction(const Expr& usage, const Decl& target) const
+{
+    auto usageSym = GetCurSymbolByKindCached(SymbolKind::FUNC_LIKE, usage.scopeName);
+    if (usageSym == nullptr || IsGlobalOrStaticVar(target)) {
+        return false;
+    }
+    auto declSym = GetCurSymbolByKindCached(SymbolKind::FUNC_LIKE, target.scopeName);
+    if (declSym != nullptr) {
+        // Local variable usage.
+        return usageSym != declSym;
+    }
+    if (target.outerDecl == nullptr) {
+        // Local variable declared in the initializer of a global variable.
+        return true;
+    }
+    if (auto usageDecl = DynamicCast<FuncDecl*>(usageSym->node);
+        usageDecl && !usageDecl->TestAttr(Attribute::CONSTRUCTOR)) {
+        // Member variable usage.
+        return target.outerDecl != usageDecl->outerDecl && usageSym != declSym;
+    }
+    // Used in lambda which means capture the member variable.
+    return usageSym->node->astKind == ASTKind::LAMBDA_EXPR;
+}
 
 // Only update scope is terminated for control flow expr.
 void InitializationChecker::UpdateScopeStatus(const Node& node)
@@ -335,7 +376,7 @@ void InitializationChecker::UpdateScopeStatus(const Node& node)
     }
     // When meeting return expr inside constructor, we need to record current uninitialized member variables.
     if (node.astKind == ASTKind::RETURN_EXPR) {
-        Symbol* funcSym = ScopeManager::GetCurSymbolByKind(SymbolKind::FUNC_LIKE, ctx, node.scopeName);
+        Symbol* funcSym = GetCurSymbolByKindCached(SymbolKind::FUNC_LIKE, node.scopeName);
         if (!funcSym || !IsInstanceConstructor(*funcSym->node)) {
             return;
         }
@@ -624,7 +665,7 @@ void InitializationChecker::CheckInitInFuncBody(const FuncBody& fb)
         CheckInitialization(paramList.get());
     }
     bool needCheckInLoop = !fb.funcDecl ||
-        (fb.funcDecl->symbol && ScopeManager::GetCurSymbolByKind(SymbolKind::FUNC_LIKE, ctx, fb.funcDecl->scopeName));
+        (fb.funcDecl->symbol && GetCurSymbolByKindCached(SymbolKind::FUNC_LIKE, fb.funcDecl->scopeName));
     if (needCheckInLoop) {
         CheckInitInLoop(fb.body.get());
     } else {
@@ -678,7 +719,7 @@ void InitializationChecker::CheckInitInVarDecl(VarDecl& vd)
 
 void InitializationChecker::CheckLetFlag(const Expr& ae, const Expr& expr)
 {
-    bool inInitFunction = IsUsedInInitFunction(ctx, expr);
+    bool inInitFunction = IsUsedInInitFunction(expr);
     switch (expr.astKind) {
         case ASTKind::REF_EXPR:
             if (auto vd = DynamicCast<VarDecl*>(expr.GetTarget());
@@ -768,12 +809,12 @@ bool InitializationChecker::CheckInitInRefExpr(const RefExpr& re)
     if (CanSkipInitCheck(*target) || !IsOrderRelated(re, *target, target->IsNominalDecl())) {
         return true;
     }
-    Symbol* toplevelSymOfTarget = ScopeManager::GetCurSymbolByKind(SymbolKind::TOPLEVEL, ctx, target->scopeName);
+    Symbol* toplevelSymOfTarget = GetCurSymbolByKindCached(SymbolKind::TOPLEVEL, target->scopeName);
     if (toplevelSymOfTarget != nullptr && toplevelSymOfTarget->node != nullptr) {
         if (CanSkipInitCheck(*toplevelSymOfTarget->node)) {
             return true;
         }
-        Symbol* toplevelSymOfRe = ScopeManager::GetCurSymbolByKind(SymbolKind::TOPLEVEL, ctx, re.scopeName);
+        Symbol* toplevelSymOfRe = GetCurSymbolByKindCached(SymbolKind::TOPLEVEL, re.scopeName);
         if (toplevelSymOfRe != nullptr && toplevelSymOfRe->node != nullptr) {
             // If accessing non-static instance member inside nominal struct declaration, check for legality.
             bool referenceInside = toplevelSymOfRe->node->IsStructOrClassDecl() && target->outerDecl &&
@@ -793,7 +834,7 @@ bool InitializationChecker::CheckInitInRefExpr(const RefExpr& re)
     // 2. target is function or property;
     // 3. target is instance or static member variable used outside constructor,
     //    which will be checked separately in constructor.
-    if (Is<FuncParam>(target) || IsFuncOrProp(*target) || IsMemberUseOutsideCtor(ctx, re, *target)) {
+    if (Is<FuncParam>(target) || IsFuncOrProp(*target) || IsMemberUseOutsideCtor(re, *target)) {
         return true;
     }
     if (re.ShouldDiagnose(true)) {
@@ -804,7 +845,7 @@ bool InitializationChecker::CheckInitInRefExpr(const RefExpr& re)
         } else if (!target->TestAttr(Attribute::INITIALIZED)) {
             if (initVarsAfterTerminator.count(ScopeManagerApi::GetScopeGateName(re.scopeName)) != 0) {
                 return true;
-            } else if (IsInDifferentFunction(ctx, re, *target)) {
+            } else if (IsInDifferentFunction(re, *target)) {
                 // Definition and usage is not in same declaration (usage is not in constructor/member decl).
                 diag.DiagnoseRefactor(
                     DiagKindRefactor::sema_capture_before_initialization, re, target->identifier.Val());
@@ -824,7 +865,7 @@ bool InitializationChecker::CheckInitInMemberAccess(MemberAccess& ma)
         return res;
     }
     RecordInstanceVariableUsage(*ma.target);
-    auto curStructOfMemberAccess = ScopeManager::GetCurSymbolByKind(SymbolKind::STRUCT, ctx, ma.scopeName);
+    auto curStructOfMemberAccess = GetCurSymbolByKindCached(SymbolKind::STRUCT, ma.scopeName);
     if (auto re = DynamicCast<RefExpr*>(ma.baseExpr.get()); re && ma.target->outerDecl &&
         !ma.target->TestAttr(Attribute::STATIC) && curStructOfMemberAccess &&
         curStructOfMemberAccess->node->IsStructOrClassDecl()) {
@@ -845,7 +886,7 @@ bool InitializationChecker::CheckInitInMemberAccess(MemberAccess& ma)
     // Do not report use before initialization when:
     // 1. target is function or property;
     // 2. target is instance or static member variable which will be checked separately in constructor.
-    if (IsFuncOrProp(*ma.target) || IsMemberUseOutsideCtor(ctx, ma, *ma.target)) {
+    if (IsFuncOrProp(*ma.target) || IsMemberUseOutsideCtor(ma, *ma.target)) {
         return res;
     }
     bool isUndefinedVar = ma.target->TestAttr(Attribute::GLOBAL) && ma.target->begin.fileID == ma.begin.fileID &&
@@ -854,7 +895,7 @@ bool InitializationChecker::CheckInitInMemberAccess(MemberAccess& ma)
         (void)diag.DiagnoseRefactor(DiagKindRefactor::sema_undefined_variable, ma, ma.target->identifier.Val());
         return false;
     }
-    auto curStructOfTarget = ScopeManager::GetCurSymbolByKind(SymbolKind::STRUCT, ctx, ma.target->scopeName);
+    auto curStructOfTarget = GetCurSymbolByKindCached(SymbolKind::STRUCT, ma.target->scopeName);
     bool isInSameDecl = curStructOfMemberAccess && curStructOfMemberAccess == curStructOfTarget;
     if (isInSameDecl && !IsInitialized(ma)) {
         (void)diag.Diagnose(ma, DiagKind::sema_used_before_initialization, ma.target->identifier.Val());
@@ -894,7 +935,7 @@ bool InitializationChecker::CheckInitInAssignExpr(const AssignExpr& ae)
             (void)CheckInitInExpr(ae.leftValue.get());
         }
         // AssignExpr cannot inialize captured variable.
-        if (target->TestAttr(Attribute::INITIALIZATION_CHECKED) && !IsInDifferentFunction(ctx, ae, *target)) {
+        if (target->TestAttr(Attribute::INITIALIZATION_CHECKED) && !IsInDifferentFunction(ae, *target)) {
             UpdateInitializationStatus(ae, *target);
         }
         return true;
@@ -1259,19 +1300,16 @@ std::unordered_set<Ptr<Decl>> InitializationChecker::CheckAndGetConditionalInitD
     Expr& expr, const std::unordered_set<Ptr<Decl>>& uninitsDecls)
 {
     CheckInitInCondition(expr);
-    auto inited = std::set<Decl*>{};
-    for (auto var : GetPatternVarsImpl{}.GetDefinedVars(expr)) {
+    if (uninitsDecls.empty()) {
+        return {};
+    }
+    auto patternVars = GetPatternVarsImpl{}.GetDefinedVars(expr);
+    std::unordered_set<Decl*> inited;
+    inited.reserve(patternVars.size());
+    for (auto var : patternVars) {
         inited.insert(var);
     }
-    std::unordered_set<Ptr<Decl>> conditionalInitialized;
-    GetInitsInExpr(&expr, conditionalInitialized);
-    // Reset status as before.
-    for (auto decl : uninitsDecls) {
-        if (conditionalInitialized.find(decl) != conditionalInitialized.end() && inited.count(decl) == 0) {
-            decl->DisableAttr(Attribute::INITIALIZED);
-        }
-    }
-    return conditionalInitialized;
+    return CollectConditionalInitializedDecls(&expr, uninitsDecls, inited);
 }
 
 void InitializationChecker::CheckInitInCondBlock(Expr& expr, const std::unordered_set<Ptr<Decl>>& uninitsDecls,
@@ -1288,13 +1326,9 @@ void InitializationChecker::CheckInitInCondBlock(Expr& expr, const std::unordere
         firstInitBranchInited = true;
     } else {
         // calculate the intersection
-        std::unordered_set<Ptr<Decl>> tmpInitedInIfBlock;
-        for (auto decl : initedInIfBlock) {
-            if (commonInitedDeclsOfBranches.find(decl) != commonInitedDeclsOfBranches.end()) {
-                tmpInitedInIfBlock.insert(decl);
-            }
-        }
-        commonInitedDeclsOfBranches = tmpInitedInIfBlock;
+        Utils::EraseIf(commonInitedDeclsOfBranches, [&initedInIfBlock](auto decl) {
+            return initedInIfBlock.count(decl) == 0;
+        });
     }
 }
 
@@ -1338,7 +1372,7 @@ bool InitializationChecker::CheckInitInBinaryExpr(const BinaryExpr& be)
     std::unordered_set<Ptr<Decl>> leftUninitsDecls;
     GetUnInitsInExpr(be.leftExpr, leftUninitsDecls);
     std::unordered_set<Ptr<Decl>> rightUninitsDecls;
-    GetUnInitsInExpr(be.rightExpr, rightUninitsDecls);
+    GetUnInitsInExpr(be.rightExpr, rightUninitsDecls, &leftUninitsDecls);
     auto res = CheckInitInExpr(be.leftExpr.get());
     ++optionalCtxDepth;
     res = res && CheckInitInExpr(be.rightExpr.get());
@@ -1346,9 +1380,7 @@ bool InitializationChecker::CheckInitInBinaryExpr(const BinaryExpr& be)
 
     // Because of short-circuit, variables in rightExpr is not guaranteed to be initialized.
     for (auto decl : rightUninitsDecls) {
-        if (!Utils::In(decl, leftUninitsDecls)) {
-            decl->DisableAttr(Attribute::INITIALIZED);
-        }
+        decl->DisableAttr(Attribute::INITIALIZED);
     }
     return res;
 }
@@ -1369,9 +1401,6 @@ bool InitializationChecker::CheckInitInCondition(Expr& e)
         if (bin->op == TokenKind::AND) {
             bool res = CheckInitInCondition(*bin->leftExpr);
             res = CheckInitInCondition(*bin->rightExpr) && res;
-            for (auto var : GetPatternVarsImpl{}.GetDefinedVars(*bin)) {
-                var->EnableAttr(Attribute::INITIALIZED);
-            }
             return res;
         }
     }
@@ -1456,19 +1485,11 @@ void InitializationChecker::CheckInitInLoop(Ptr<Block> block, bool shouldUnset)
         return;
     }
     std::unordered_set<Ptr<Decl>> uninitedDecls;
-    for (auto& n : block->body) {
-        GetUnInitsInExpr(n.get(), uninitedDecls);
-    }
-    std::unordered_set<Ptr<Decl>> uninitedLocalDecls;
-    GetLocalUnInitsInExpr(block, uninitedLocalDecls);
+    GetUnInitsInExpr(block.get(), uninitedDecls);
     CheckInitialization(block);
-    std::unordered_set<Ptr<Decl>> initedDecls;
-    for (auto& n : block->body) {
-        GetInitsInExpr(n.get(), initedDecls);
-    }
     if (shouldUnset) {
         for (auto decl : uninitedDecls) {
-            if (initedDecls.count(decl) != 0) {
+            if (decl->TestAttr(Attribute::INITIALIZED)) {
                 decl->DisableAttr(Attribute::INITIALIZED);
             }
         }
@@ -1497,7 +1518,7 @@ bool InitializationChecker::CheckIllegalMemberAccess(const Expr& expr, const Dec
         }
         return true;
     }
-    auto outerMostFuncSym = ScopeManager::GetOutMostSymbol(ctx, SymbolKind::FUNC, expr.scopeName);
+    auto outerMostFuncSym = GetOutMostSymbolCached(SymbolKind::FUNC, expr.scopeName);
     auto outerMostFunc = outerMostFuncSym ? StaticCast<FuncDecl*>(outerMostFuncSym->node) : nullptr;
     bool notInMemberFunc = !outerMostFunc || !outerMostFunc->outerDecl || !outerMostFunc->outerDecl->IsNominalDecl();
     if (notInMemberFunc) {
@@ -1537,7 +1558,7 @@ bool InitializationChecker::CheckIllegalRefExprAccess(
         return CheckIllegalMemberAccess(re, *re.ref.target, *toplevelSymOfRe.node);
     }
     // Check super class/interface member access
-    Symbol* symOfExprFunc = ScopeManager::GetOutMostSymbol(ctx, SymbolKind::FUNC_LIKE, re.scopeName);
+    Symbol* symOfExprFunc = GetOutMostSymbolCached(SymbolKind::FUNC_LIKE, re.scopeName);
     if (re.ref.target != nullptr && re.ref.target->astKind == ASTKind::VAR_DECL) {
         if (symOfExprFunc == nullptr || symOfExprFunc->astKind != AST::ASTKind::FUNC_DECL ||
             (symOfExprFunc->astKind == AST::ASTKind::FUNC_DECL &&
@@ -1646,7 +1667,7 @@ void InitializationChecker::CheckInitInConstructors(FuncDecl& fd, const std::vec
     if (found != scopeTerminationKinds.end() && found->second == ASTKind::THROW_EXPR) {
         return;
     }
-    auto definitelyUninitVars = ctorUninitVarsMap[&fd];
+    const auto& definitelyUninitVars = ctorUninitVarsMap[&fd];
     for (auto decl : unInitNonFuncDecls) {
         // Skip report error when the decl is common member for CJMP.
         if (decl->TestAnyAttr(Attribute::INITIALIZED, Attribute::COMMON) && definitelyUninitVars.count(decl) == 0) {
@@ -1769,7 +1790,7 @@ bool InitializationChecker::IsVarUsedBeforeDefinition(const Node& checkNode, Nod
         if (!isInDiffScope) {
             return false;
         }
-        auto outerScope = ScopeManager::GetCurOuterDeclOfScopeLevelX(ctx, checkNode, targetNode.scopeLevel);
+        auto outerScope = GetCurOuterDeclOfScopeLevelXCached(checkNode, targetNode.scopeLevel);
         auto outerTry = outerScope ? As<ASTKind::TRY_EXPR>(outerScope->node) : nullptr;
         auto isCompilerAddTryExpr = outerTry && outerTry->isDesugaredFromTryWithResources;
         // See CreateInnerFinallyBlock in the desugar.cpp for the reasons.

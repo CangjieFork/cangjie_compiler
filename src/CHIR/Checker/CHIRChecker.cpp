@@ -134,7 +134,7 @@ std::string ValueSymbolToString(const Value& value)
         const auto& func = Cangjie::StaticCast<const Function&>(value);
         std::stringstream ss;
         ss << "Func " << func.GetIdentifier() << TypeVecToString("<", func.GetGenericTypeParams(), ">") << "(";
-        auto parameters = func.GetParams();
+        const auto& parameters = func.GetParams();
         for (auto param : parameters) {
             ss << std::endl << param->ToString(1);
         }
@@ -157,7 +157,7 @@ bool GenericTypeIsInContainer(const Type& type, const std::vector<GenericType*>&
     if (type.IsGeneric()) {
         return std::find(container.begin(), container.end(), &type) != container.end();
     }
-    for (auto ty : type.GetTypeArgs()) {
+    for (auto ty : type.GetTypeArgsRef()) {
         if (!GenericTypeIsInContainer(*ty, container)) {
             return false;
         }
@@ -208,7 +208,7 @@ std::vector<Type*> CalculateAllUpperBounds(const GenericType& genericType, CHIRB
         CJC_ASSERT(res);
         for (auto& it : instMap) {
             if (it.second == &genericType) {
-                auto temp = it.first->GetUpperBounds();
+                const auto& temp = it.first->GetUpperBounds();
                 extraUpperBounds.insert(extraUpperBounds.begin(), temp.begin(), temp.end());
                 replaceTable.emplace(it);
             }
@@ -350,7 +350,7 @@ Value* GetOwnerFuncOrLambda(const BlockGroup& blockGroup)
 }
 
 void CollectFuncAndGenericTypesRecursively(
-    const Value& func, std::vector<std::pair<const Value*, std::vector<GenericType*>>>& result)
+    const Value& func, std::vector<std::pair<const Value*, const std::vector<GenericType*>*>>& result)
 {
     if (auto lambdaRes = Cangjie::DynamicCast<const LocalVar*>(&func)) {
         auto lambda = Cangjie::StaticCast<Lambda*>(lambdaRes->GetExpr());
@@ -358,10 +358,10 @@ void CollectFuncAndGenericTypesRecursively(
         CJC_NULLPTR_CHECK(parentBG);
         auto parentFuncOrLambda = GetOwnerFuncOrLambda(*parentBG);
         CollectFuncAndGenericTypesRecursively(*parentFuncOrLambda, result);
-        result.emplace_back(lambdaRes, lambda->GetGenericTypeParams());
+        result.emplace_back(lambdaRes, &lambda->GetGenericTypeParams());
     } else {
         auto funcBase = Cangjie::StaticCast<const Function*>(&func);
-        result.emplace_back(funcBase, funcBase->GetGenericTypeParams());
+        result.emplace_back(funcBase, &funcBase->GetGenericTypeParams());
     }
 }
 
@@ -544,7 +544,7 @@ void CHIRChecker::TypeCheckError(
 
 bool CHIRChecker::OperandNumIsEqual(size_t expectedNum, const Expression& expr, const Function& topLevelFunc)
 {
-    auto realNum = expr.GetOperands().size();
+    auto realNum = expr.GetNumOfOperands();
     if (expectedNum != realNum) {
         auto errMsg = "expect " + std::to_string(expectedNum) +
             " operand(s), but there are " + std::to_string(realNum) + " in fact.";
@@ -558,7 +558,7 @@ bool CHIRChecker::OperandNumIsEqual(
     const std::vector<size_t>& expectedNum, const Expression& expr, const Function& topLevelFunc)
 {
     CJC_ASSERT(!expectedNum.empty());
-    auto realNum = expr.GetOperands().size();
+    auto realNum = expr.GetNumOfOperands();
     for (auto n : expectedNum) {
         if (n == realNum) {
             return true;
@@ -580,7 +580,7 @@ bool CHIRChecker::OperandNumIsEqual(
 
 bool CHIRChecker::SuccessorNumIsEqual(size_t expectedNum, const Terminator& expr, const Function& topLevelFunc)
 {
-    auto realNum = expr.GetSuccessors().size();
+    auto realNum = expr.GetNumOfSuccessor();
     if (expectedNum != realNum) {
         auto errMsg = "expect " + std::to_string(expectedNum) +
             " successor(s), but there are " + std::to_string(realNum) + " in fact.";
@@ -592,7 +592,7 @@ bool CHIRChecker::SuccessorNumIsEqual(size_t expectedNum, const Terminator& expr
 
 bool CHIRChecker::OperandNumAtLeast(size_t expectedNum, const Expression& expr, const Function& topLevelFunc)
 {
-    auto realNum = expr.GetOperands().size();
+    auto realNum = expr.GetNumOfOperands();
     if (expectedNum > realNum) {
         auto errMsg = "expect at least " + std::to_string(expectedNum) +
             " operand(s), but there are " + std::to_string(realNum) + " in fact.";
@@ -604,7 +604,7 @@ bool CHIRChecker::OperandNumAtLeast(size_t expectedNum, const Expression& expr, 
 
 bool CHIRChecker::SuccessorNumAtLeast(size_t expectedNum, const Terminator& expr, const Function& topLevelFunc)
 {
-    auto realNum = expr.GetSuccessors().size();
+    auto realNum = expr.GetNumOfSuccessor();
     if (expectedNum > realNum) {
         auto errMsg = "expect at least " + std::to_string(expectedNum) +
             " successor(s), but there are " + std::to_string(realNum) + " in fact.";
@@ -919,8 +919,8 @@ bool CHIRChecker::CheckOriginalLambdaInfo(const Function& func)
     }
 
     // 2. check original generic type params
-    auto originalTypeParams = func.GetOriginalGenericTypeParams();
-    auto curTypeParams = func.GetGenericTypeParams();
+    const auto& originalTypeParams = func.GetOriginalGenericTypeParamsRef();
+    const auto& curTypeParams = func.GetGenericTypeParams();
     if (originalTypeParams.size() > curTypeParams.size()) {
         auto errMsg = "func " + func.GetIdentifier() +
             " is lifted lambda, original lambda generic type params' size is " +
@@ -943,9 +943,9 @@ bool CHIRChecker::CheckCFuncType(const FuncType& funcType, const Lambda* lambda,
 
     // 2. parameter type in CFunc must be CType
     bool typeMatched = true;
-    auto paramTypes = funcType.GetParamTypes();
-    for (size_t i = 0; i < paramTypes.size(); ++i) {
-        auto pType = paramTypes[i];
+    auto paramNum = funcType.GetNumOfParams();
+    for (size_t i = 0; i < paramNum; ++i) {
+        auto pType = funcType.GetParamType(i);
         if (!IsCType(*pType)) {
             auto errMsg = "this is a CFunc, but the " + IndexToString(i) + " paramter type is " +
                 pType->ToString() + ", it's not a CType.";
@@ -1330,14 +1330,24 @@ void CHIRChecker::CheckFuncParams(
         paramTypesInBody.emplace_back(p->GetType());
     }
     auto paramsStrInBody = paramTypesToString(paramTypesInBody);
-    auto paramTypesInFuncType = funcType.GetParamTypes();
-    auto paramsStrInFuncType = paramTypesToString(paramTypesInFuncType);
+    auto paramsStrInFuncType = [&funcType]() {
+        std::string paramsStr = "(";
+        for (size_t i = 0; i < funcType.GetNumOfParams(); ++i) {
+            if (i > 0) {
+                paramsStr += ", ";
+            }
+            paramsStr += funcType.GetParamType(i)->ToString();
+        }
+        paramsStr += ")";
+        return paramsStr;
+    }();
+    auto paramNumInFuncType = funcType.GetNumOfParams();
 
     // 1. size must be equal
-    if (paramTypesInFuncType.size() != params.size()) {
+    if (paramNumInFuncType != params.size()) {
         auto errMsg = "inconsistent number of parameters in func " + funcIdentifier + ", there are " +
             std::to_string(params.size()) + " parameter(s) in func body, but there are " +
-            std::to_string(paramTypesInFuncType.size()) + " parameter(s) in func type.\n";
+            std::to_string(paramNumInFuncType) + " parameter(s) in func type.\n";
         auto hint1 = "        parameter type in func body is " + paramsStrInBody + "\n";
         auto hint2 = "        parameter type in func type is " + paramsStrInFuncType + "\n";
         Errorln(errMsg + hint1 + hint2);
@@ -1346,8 +1356,8 @@ void CHIRChecker::CheckFuncParams(
 
     // 2. type must be equal
     std::vector<size_t> errIdx;
-    for (size_t i = 0; i < paramTypesInFuncType.size(); i++) {
-        if (paramTypesInFuncType[i] != params[i]->GetType()) {
+    for (size_t i = 0; i < paramNumInFuncType; i++) {
+        if (funcType.GetParamType(i) != params[i]->GetType()) {
             errIdx.emplace_back(i);
         }
     }
@@ -1503,10 +1513,10 @@ void CHIRChecker::CheckUnreachableOpAndGenericTyInBlock(const Block& block, std:
         return;
     }
     auto valSize = reachableValues.size();
-    for (auto expr : block.GetExpressions()) {
+    for (auto expr : block.GetExpressionsRef()) {
         auto typeSize = reachableGenericTypes.size();
         if (auto lambda = DynamicCast<Lambda*>(expr)) {
-            auto tempTypes = lambda->GetGenericTypeParams();
+            const auto& tempTypes = lambda->GetGenericTypeParams();
             reachableGenericTypes.insert(reachableGenericTypes.end(), tempTypes.begin(), tempTypes.end());
         }
         // 1. check in expressions
@@ -1525,7 +1535,8 @@ void CHIRChecker::CheckUnreachableOpAndGenericTyInBlock(const Block& block, std:
         // 3. check successor blocks
         if (expr->IsTerminator()) {
             auto terminator = Cangjie::StaticCast<Terminator*>(expr);
-            for (auto suc : terminator->GetSuccessors()) {
+            for (size_t i = 0; i < terminator->GetNumOfSuccessor(); ++i) {
+                auto suc = terminator->GetSuccessor(i);
                 CheckUnreachableOpAndGenericTyInBlock(*suc, reachableValues, reachableGenericTypes, visitedBlocks);
             }
         }
@@ -1547,7 +1558,8 @@ void CHIRChecker::CheckUnreachableOpAndGenericTyInExpr(
 
 void CHIRChecker::CheckUnreachableOperandInExpr(const Expression& expr, std::vector<Value*>& reachableValues)
 {
-    for (auto op : expr.GetOperands()) {
+    for (size_t i = 0; i < expr.GetNumOfOperands(); ++i) {
+        auto op = expr.GetOperand(i);
         if (op->IsLiteral() || op->IsGlobal()) {
             continue;
         }
@@ -1580,7 +1592,7 @@ void CHIRChecker::CheckUnreachableGenericTypeInExpr(
     } else if (Is<FuncCall>(expr) || Is<FuncCallWithException>(expr)) {
         auto base = FuncCallBase(&expr);
         // 3. generic type in instantiated type args must be reachable
-        const auto& instantiatedTypeArgs = base.GetInstantiatedTypeArgs();
+        const auto& instantiatedTypeArgs = base.GetInstantiatedTypeArgsRef();
         for (size_t i = 0; i < instantiatedTypeArgs.size(); ++i) {
             if (!GenericTypeIsInContainer(*instantiatedTypeArgs[i], reachableGenericTypes)) {
                 auto errMsg = "generic type " + instantiatedTypeArgs[i]->ToString() + "is unreachable, the type is " +
@@ -1621,7 +1633,7 @@ void CHIRChecker::CheckUnreachableGenericTypeInExpr(
     } else if (eKind == ExprKind::INTRINSIC || eKind == ExprKind::INTRINSIC_WITH_EXCEPTION) {
         auto base = IntrinsicBase(&expr);
         // 8. generic type in Intrinsic must be reachable
-        auto instantiatedTypeArgs = base.GetInstantiatedTypeArgs();
+        const auto& instantiatedTypeArgs = base.GetInstantiatedTypeArgsRef();
         for (size_t i = 0; i < instantiatedTypeArgs.size(); ++i) {
             if (!GenericTypeIsInContainer(*instantiatedTypeArgs[i], reachableGenericTypes)) {
                 auto errMsg = "generic type " + instantiatedTypeArgs[i]->ToString() + "is unreachable, the type is " +
@@ -1664,7 +1676,7 @@ void CHIRChecker::CheckBlockGroup(const BlockGroup& blockGroup, const Function& 
     }
 
     // 5. there must be blocks in block group
-    auto blocks = blockGroup.GetBlocks();
+    const auto& blocks = blockGroup.GetBlocksRef();
     if (blocks.empty()) {
         ErrorInFunc(topLevelFunc, "there is no block in block group " + blockGroup.GetIdentifier() + ".");
     }
@@ -1718,7 +1730,7 @@ void CHIRChecker::CheckBlock(const Block& block, const Function& topLevelFunc)
     CheckTopLevelFunc(block.GetTopLevelFunc(), topLevelFunc, "block", block.GetIdentifier());
 
     // 4. expressions in block can't be empty
-    auto exprs = block.GetExpressions();
+    const auto& exprs = block.GetExpressionsRef();
     if (optionalRules.find(Rule::EMPTY_BLOCK) != optionalRules.end() && exprs.size() == 0) {
         ErrorInFunc(topLevelFunc, "there is no expression in block " + block.GetIdentifier() + ".");
     }
@@ -1755,7 +1767,8 @@ void CHIRChecker::CheckTerminatorJump(const Terminator& terminator, const Functi
 {
     // 1. terminator can't jump to another block group
     auto curBlockGroup = terminator.GetParentBlock()->GetParentBlockGroup();
-    for (auto suc : terminator.GetSuccessors()) {
+    for (size_t i = 0; i < terminator.GetNumOfSuccessor(); ++i) {
+        auto suc = terminator.GetSuccessor(i);
         if (suc->GetParentBlockGroup() != curBlockGroup) {
             ErrorInFunc(topLevelFunc, "terminator " + terminator.ToString(0) + " in block group " +
                 curBlockGroup->GetIdentifier() + " jumps to an unreachable block " + suc->GetIdentifier() +
@@ -1767,9 +1780,16 @@ void CHIRChecker::CheckTerminatorJump(const Terminator& terminator, const Functi
 void CHIRChecker::CheckPredecessors(const Block& block, const Function& topLevelFunc)
 {
     // 1. the successor of current block's predecessor must be current block
-    for (auto b : block.GetPredecessors()) {
-        auto successors = b->GetTerminator()->GetSuccessors();
-        if (std::find(successors.begin(), successors.end(), &block) == successors.end()) {
+    for (auto b : block.GetPredecessorsRef()) {
+        auto terminator = b->GetTerminator();
+        bool found = false;
+        for (size_t i = 0; i < terminator->GetNumOfSuccessor(); ++i) {
+            if (terminator->GetSuccessor(i) == &block) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
             ErrorInFunc(topLevelFunc, "block " + block.GetIdentifier() + "'s predecessor is " + b->GetIdentifier() +
                 ", but block " + b->GetIdentifier() + "'s successor is not "  + block.GetIdentifier() + ".");
         }
@@ -2019,16 +2039,18 @@ void CHIRChecker::CheckApplyBase(const ApplyBase& expr, const Function& topLevel
     }
 
     // 3. check instantiated type args
-    std::vector<GenericType*> genericTypeParams;
+    const std::vector<GenericType*>* genericTypeParams = nullptr;
     if (auto func = DynamicCast<Function*>(expr.GetCallee())) {
-        genericTypeParams = func->GetGenericTypeParams();
+        genericTypeParams = &func->GetGenericTypeParams();
     } else if (auto localVar = DynamicCast<LocalVar*>(expr.GetCallee())) {
         if (auto lambda = DynamicCast<Lambda*>(localVar->GetExpr())) {
-            genericTypeParams = lambda->GetGenericTypeParams();
+            genericTypeParams = &lambda->GetGenericTypeParams();
         }
     }
-    auto instTypeArgs = expr.GetInstantiatedTypeArgs();
-    if (!CheckInstantiatedTypeArgs(instTypeArgs, genericTypeParams, *expr.GetRawExpr(), topLevelFunc)) {
+    const auto& instTypeArgs = expr.GetInstantiatedTypeArgsRef();
+    const std::vector<GenericType*> emptyGenericTypeParams;
+    const auto& actualGenericTypeParams = genericTypeParams != nullptr ? *genericTypeParams : emptyGenericTypeParams;
+    if (!CheckInstantiatedTypeArgs(instTypeArgs, actualGenericTypeParams, *expr.GetRawExpr(), topLevelFunc)) {
         return;
     }
 
@@ -2040,7 +2062,7 @@ void CHIRChecker::CheckApplyBase(const ApplyBase& expr, const Function& topLevel
     // 5. check func args
     auto calleeType = StaticCast<FuncType*>(expr.GetCallee()->GetType());
     auto instFuncType = CalculateInstFuncType(
-        *calleeType, instTypeArgs, genericTypeParams, expr.GetInstParentCustomTyOfCallee(builder));
+        *calleeType, instTypeArgs, actualGenericTypeParams, expr.GetInstParentCustomTyOfCallee(builder));
     CheckApplyFuncArgs(
         expr.GetArgs(), instFuncType->GetParamTypes(), calleeType->HasVarArg(), *expr.GetRawExpr(), topLevelFunc);
 
@@ -2253,8 +2275,8 @@ void CHIRChecker::CheckInvokeWithException(const InvokeWithException& expr, cons
 void CHIRChecker::CheckInvokeBase(const InvokeBase& expr, const Function& topLevelFunc)
 {
     // 1. check instantiated type args
-    const auto& genericTypeParams = expr.GetGenericTypeParams();
-    auto instTypeArgs = expr.GetInstantiatedTypeArgs();
+    const auto& genericTypeParams = expr.GetGenericTypeParamsRef();
+    const auto& instTypeArgs = expr.GetInstantiatedTypeArgsRef();
     if (!CheckInstantiatedTypeArgs(instTypeArgs, genericTypeParams, *expr.GetRawExpr(), topLevelFunc)) {
         return;
     }
@@ -2271,7 +2293,6 @@ void CHIRChecker::CheckInvokeBase(const InvokeBase& expr, const Function& topLev
         auto virMethodCtx = VirMethodFullContext {
             .srcCodeIdentifier = expr.GetMethodName(),
             .originalFuncType = expr.GetMethodType(),
-            .genericTypeParams = expr.GetGenericTypeParams(),
             .offset = expr.GetVirtualMethodOffset(),
             .thisType = thisType,
             .srcParentType = expr.GetInstSrcParentCustomTypeOfMethod(builder)
@@ -2512,8 +2533,8 @@ bool CHIRChecker::InstTypeCanSetToGenericRelatedType(Type& instType, const Type&
     if (instType.GetTypeKind() != genericRelatedType.GetTypeKind()) {
         return false;
     }
-    auto instTypeArgs = instType.GetTypeArgs();
-    auto genericTypeArgs = genericRelatedType.GetTypeArgs();
+    const auto& instTypeArgs = instType.GetTypeArgsRef();
+    const auto& genericTypeArgs = genericRelatedType.GetTypeArgsRef();
     if (instTypeArgs.size() != genericTypeArgs.size()) {
         return false;
     }
@@ -2692,8 +2713,8 @@ void CHIRChecker::CheckInvokeStaticWithException(const InvokeStaticWithException
 void CHIRChecker::CheckInvokeStaticBase(const InvokeStaticBase& expr, const Function& topLevelFunc)
 {
     // 1. check instantiated type args
-    const auto& genericTypeParams = expr.GetGenericTypeParams();
-    auto instTypeArgs = expr.GetInstantiatedTypeArgs();
+    const auto& genericTypeParams = expr.GetGenericTypeParamsRef();
+    const auto& instTypeArgs = expr.GetInstantiatedTypeArgsRef();
     if (!CheckInstantiatedTypeArgs(instTypeArgs, genericTypeParams, *expr.GetRawExpr(), topLevelFunc)) {
         return;
     }
@@ -2725,7 +2746,6 @@ void CHIRChecker::CheckInvokeStaticBase(const InvokeStaticBase& expr, const Func
     auto virMethodCtx = VirMethodFullContext {
         .srcCodeIdentifier = expr.GetMethodName(),
         .originalFuncType = expr.GetMethodType(),
-        .genericTypeParams = expr.GetGenericTypeParams(),
         .offset = expr.GetVirtualMethodOffset(),
         .thisType = expr.GetThisType()->StripAllRefs(),
         .srcParentType = expr.GetInstSrcParentCustomTypeOfMethod(builder)
@@ -3100,7 +3120,7 @@ void CHIRChecker::CheckInout(const IntrinsicBase& expr, const Function& topLevel
     }
 
     // 1. can't have type args
-    if (!expr.GetInstantiatedTypeArgs().empty()) {
+    if (!expr.GetInstantiatedTypeArgsRef().empty()) {
         ErrorInExpr(topLevelFunc, *expr.GetRawExpr(), "`inout` intrinsic can't have type args.");
     }
 
@@ -3110,8 +3130,8 @@ void CHIRChecker::CheckInout(const IntrinsicBase& expr, const Function& topLevel
     }
 
     // 3. operand type must be ref, but can't be type&&
-    auto operands = expr.GetOperands();
-    auto opType = operands[0]->GetType();
+    auto operand = expr.GetRawExpr()->GetOperand(0);
+    auto opType = operand->GetType();
     if (!opType->IsRef()) {
         ErrorInExpr(topLevelFunc, *expr.GetRawExpr(),
             "`inout` operand's type is `" + opType->ToString() + "`, but ref type is expected.");
@@ -3125,7 +3145,7 @@ void CHIRChecker::CheckInout(const IntrinsicBase& expr, const Function& topLevel
     }
 
     // 4. operand type must be C-type (exclude CString)
-    CheckInoutOpSrc(*operands[0], expr, topLevelFunc);
+    CheckInoutOpSrc(*operand, expr, topLevelFunc);
 
     // 5. result type must be CPointer
     auto resultType = expr.GetResult()->GetType();
@@ -3145,7 +3165,7 @@ void CHIRChecker::CheckInout(const IntrinsicBase& expr, const Function& topLevel
 
     // 7. result must be Function's or Intrinsic/pointerInit1's arg
     std::function<void(const LocalVar&)> checkUsers = [this, &checkUsers, &expr, &topLevelFunc](const LocalVar& localVar) {
-        for (auto user : localVar.GetUsers()) {
+        for (auto user : localVar.GetUsersRef()) {
             auto errMsgBase = "the result is used in a wrong expression `" + user->ToString(0) + "`, ";
             if (Is<ApplyWithException>(user) || Is<Apply>(user)) {
                 continue;
@@ -3234,8 +3254,8 @@ bool CHIRChecker::CheckTypeIsValid(
 {
     if (auto customType = DynamicCast<const CustomType*>(&type)) {
         auto genericType = customType->GetCustomTypeDef()->GetType();
-        auto declaredSize = genericType->GetTypeArgs().size();
-        auto callSiteSize = customType->GetTypeArgs().size();
+        auto declaredSize = genericType->GetTypeArgsRef().size();
+        auto callSiteSize = customType->GetTypeArgsRef().size();
         if (declaredSize != callSiteSize) {
             auto errMsg = "type args' size NOT matched, the " + typeName + " type is `" + customType->ToString() +
                 "` which has " + std::to_string(callSiteSize) + " type arg(s), but its original type is `" +
@@ -3516,8 +3536,8 @@ void CHIRChecker::CheckEnumTuple(const Tuple& expr, const Function& topLevelFunc
 
     // 1. operands can't be empty
     auto result = expr.GetResult();
-    const auto& operands = expr.GetOperands();
-    if (operands.empty()) {
+    auto operandsNum = expr.GetNumOfOperands();
+    if (operandsNum == 0) {
         auto errMsg = "must have one operand in `" + result->ToString(0) +
             "` at least, and the 1st operand's type is UInt32 or Bool.";
         ErrorInFunc(topLevelFunc, errMsg);
@@ -3525,7 +3545,7 @@ void CHIRChecker::CheckEnumTuple(const Tuple& expr, const Function& topLevelFunc
     }
 
     // 2. the 1st operand is enum constructor's index, so its type must be Bool or UInt32
-    auto index = operands[0];
+    auto index = expr.GetOperand(0);
     if (!IsEnumSelectorType(*index->GetType())) {
         TypeCheckError(expr, *index, "UInt32 or Bool", topLevelFunc);
         return;
@@ -3549,7 +3569,7 @@ void CHIRChecker::CheckEnumTuple(const Tuple& expr, const Function& topLevelFunc
         return;
     }
 
-    if (operands.size() == 1) {
+    if (operandsNum == 1) {
         return;
     }
     // 5. check the other operands, they are enum constructor's parameter types
@@ -3570,18 +3590,19 @@ void CHIRChecker::CheckEnumTuple(const Tuple& expr, const Function& topLevelFunc
         return;
     }
     auto paramTypes = ctors[idx].funcType->GetParamTypes();
-    if (operands.size() - 1 != paramTypes.size()) {
+    if (operandsNum - 1 != paramTypes.size()) {
         auto errMsg = "size mismatched, there are " + std::to_string(paramTypes.size()) +
             " parameter(s) in the " + std::to_string(idx) + "-th constructor, but " +
-            std::to_string(operands.size() - 1) + " arguments are provided in `" + result->ToString(0) + "`.";
+            std::to_string(operandsNum - 1) + " arguments are provided in `" + result->ToString(0) + "`.";
         ErrorInFunc(topLevelFunc, errMsg);
         return;
     }
-    for (size_t i = 1; i < operands.size(); ++i) {
-        if (!TypeIsExpected(*operands[i]->GetType(), *paramTypes[i - 1])) {
+    for (size_t i = 1; i < operandsNum; ++i) {
+        auto operand = expr.GetOperand(i);
+        if (!TypeIsExpected(*operand->GetType(), *paramTypes[i - 1])) {
             auto errMsg = "type mismatched, the " + std::to_string(i - 1) + "-th parameter type is " +
-                paramTypes[i - 1]->ToString() + ", but " + operands[i]->GetIdentifier() + "'s type is " +
-                operands[i]->GetType()->ToString() + " in `" + result->ToString(0) + "`.";
+                paramTypes[i - 1]->ToString() + ", but " + operand->GetIdentifier() + "'s type is " +
+                operand->GetType()->ToString() + " in `" + result->ToString(0) + "`.";
             ErrorInFunc(topLevelFunc, errMsg);
         }
     }
@@ -3594,21 +3615,22 @@ void CHIRChecker::CheckStructTuple(const Tuple& expr, const Function& topLevelFu
     // 1. tuple's operands must be struct's instance member vars, so their sizes and types must be equal
     auto result = expr.GetResult();
     auto resultTy = StaticCast<StructType*>(result->GetType());
-    const auto& operands = expr.GetOperands();
+    auto operandsNum = expr.GetNumOfOperands();
     auto structDef = resultTy->GetStructDef();
     auto memberVarTypes = resultTy->GetInstantiatedMemberTys(builder);
-    if (operands.size() != memberVarTypes.size()) {
+    if (operandsNum != memberVarTypes.size()) {
         auto errMsg = "size mismatched, there are " + std::to_string(memberVarTypes.size()) +
             " instance member var(s) in the struct " + structDef->GetIdentifier() + ", but " +
-            std::to_string(operands.size()) + " operand(s) are provided in `" + result->ToString(0) + "`.";
+            std::to_string(operandsNum) + " operand(s) are provided in `" + result->ToString(0) + "`.";
         ErrorInFunc(topLevelFunc, errMsg);
         return;
     }
     for (size_t i = 0; i < memberVarTypes.size(); ++i) {
-        if (!TypeIsExpected(*operands[i]->GetType(), *memberVarTypes[i])) {
+        auto operand = expr.GetOperand(i);
+        if (!TypeIsExpected(*operand->GetType(), *memberVarTypes[i])) {
             auto errMsg = "type mismatched, the " + std::to_string(i) + "-th member var type in struct " +
                 structDef->GetIdentifier() + " is " + memberVarTypes[i]->ToString() + ", but " +
-                operands[i]->GetIdentifier() + "'s type is " + operands[i]->GetType()->ToString() +
+                operand->GetIdentifier() + "'s type is " + operand->GetType()->ToString() +
                 " in `" + result->ToString(0) + "`.";
             ErrorInFunc(topLevelFunc, errMsg);
         }
@@ -3622,22 +3644,23 @@ void CHIRChecker::CheckNormalTuple(const Tuple& expr, const Function& topLevelFu
     // 1. operands's size must equal to size of TupleType's element type
     auto result = expr.GetResult();
     auto resultTy = StaticCast<TupleType*>(result->GetType());
-    const auto& operands = expr.GetOperands();
+    auto operandsNum = expr.GetNumOfOperands();
     auto elementTypes = StaticCast<TupleType*>(resultTy)->GetElementTypes();
-    if (operands.size() != elementTypes.size()) {
+    if (operandsNum != elementTypes.size()) {
         auto errMsg = "size mismatched, there are " + std::to_string(elementTypes.size()) +
             " element(s) in the tuple type `" + resultTy->ToString() + "`, but " +
-            std::to_string(operands.size()) + " operand(s) are provided in `" + result->ToString(0) + "`.";
+            std::to_string(operandsNum) + " operand(s) are provided in `" + result->ToString(0) + "`.";
         ErrorInFunc(topLevelFunc, errMsg);
         return;
     }
 
     // 2. operand's type must equal to element type
     for (size_t i = 0; i < elementTypes.size(); ++i) {
-        if (!TypeIsExpected(*operands[i]->GetType(), *elementTypes[i])) {
+        auto operand = expr.GetOperand(i);
+        if (!TypeIsExpected(*operand->GetType(), *elementTypes[i])) {
             auto errMsg = "type mismatched, the " + std::to_string(i) + "-th element type in tuple type `" +
                 resultTy->ToString() + "` is " + elementTypes[i]->ToString() + ", but " +
-                operands[i]->GetIdentifier() + "'s type is " + operands[i]->GetType()->ToString() +
+                operand->GetIdentifier() + "'s type is " + operand->GetType()->ToString() +
                 " in `" + result->ToString(0) + "`.";
             ErrorInFunc(topLevelFunc, errMsg);
         }
@@ -3850,7 +3873,8 @@ void CHIRChecker::CheckVArray(const VArray& expr, const Function& topLevelFunc)
         ErrorInExpr(topLevelFunc, expr, errMsg + hint);
         return;
     }
-    for (auto arg : expr.GetOperands()) {
+    for (size_t i = 0; i < expr.GetNumOfOperands(); ++i) {
+        auto arg = expr.GetOperand(i);
         if (!arg->GetType()->IsEqualOrSubTypeOf(*elemType, builder)) {
             TypeCheckError(expr, *arg, elemType->ToString(), topLevelFunc);
         }
@@ -3982,7 +4006,7 @@ void CHIRChecker::CheckGetInstantiateValue(const GetInstantiateValue& expr, cons
     }
 
     // 2. must have instantiated type args, or you will use Function* directly
-    auto instTypeArgs = expr.GetInstantiateTypes();
+    const auto& instTypeArgs = expr.GetInstantiateTypesRef();
     if (instTypeArgs.empty()) {
         auto errMsg = "there must be instantiated type in `GetInstantiateValue`";
         ErrorInExpr(topLevelFunc, expr, errMsg);
@@ -3990,29 +4014,29 @@ void CHIRChecker::CheckGetInstantiateValue(const GetInstantiateValue& expr, cons
     }
 
     // 3. instantiated type args must satisfy all generic constraints
-    std::vector<std::pair<const Value*, std::vector<GenericType*>>> funcAndGenericTypes;
+    std::vector<std::pair<const Value*, const std::vector<GenericType*>*>> funcAndGenericTypes;
     CollectFuncAndGenericTypesRecursively(*func, funcAndGenericTypes);
     CJC_ASSERT(!funcAndGenericTypes.empty());
     size_t allGenericTypes = 0;
     for (auto& it : funcAndGenericTypes) {
-        allGenericTypes += it.second.size();
+        allGenericTypes += it.second->size();
     }
     auto funcBase = StaticCast<const Function*>(funcAndGenericTypes.front().first);
     if (auto parentType = funcBase->GetParentCustomTypeOrExtendedType()) {
-        allGenericTypes += parentType->GetTypeArgs().size();
+        allGenericTypes += parentType->GetTypeArgsRef().size();
     }
     if (allGenericTypes != instTypeArgs.size()) {
-        auto genericTypeSize = funcAndGenericTypes.back().second.size();
+        auto genericTypeSize = funcAndGenericTypes.back().second->size();
         auto errMsg = "current func is " + GetFuncIdentifier(*func) + " with " +
             std::to_string(genericTypeSize) + " generic param type(s), and its outer func is ";
         funcAndGenericTypes.pop_back();
         for (auto it = funcAndGenericTypes.crbegin(); it != funcAndGenericTypes.crend(); ++it) {
             errMsg += "[" + GetFuncIdentifier(*it->first) + " with " +
-                std::to_string(it->second.size()) + " generic param type(s) ], ";
+                std::to_string(it->second->size()) + " generic param type(s) ], ";
         }
         if (auto parentType = funcBase->GetParentCustomTypeOrExtendedType()) {
             errMsg += "and the parent Custom type is " + parentType->ToString() + " with " +
-                std::to_string(parentType->GetTypeArgs().size()) + " generic param type(s), ";
+                std::to_string(parentType->GetTypeArgsRef().size()) + " generic param type(s), ";
         }
         errMsg += "they have " + std::to_string(allGenericTypes) +
             " generic param type(s) in total, but there are " + std::to_string(instTypeArgs.size()) +
@@ -4035,7 +4059,7 @@ void CHIRChecker::CheckGetInstantiateValue(const GetInstantiateValue& expr, cons
         }
     }
     for (auto& it : funcAndGenericTypes) {
-        for (auto genericType : it.second) {
+        for (auto genericType : *it.second) {
             if (!instTypeArgs[typeIdx]->IsEqualOrInstantiatedTypeOf(*genericType, builder)) {
                 errMsg += IndexToString(typeIdx + 1) + ", ";
                 hasError = true;

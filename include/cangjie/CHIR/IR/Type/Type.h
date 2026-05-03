@@ -347,7 +347,7 @@ public:
         if (IsGeneric()) {
             return true;
         }
-        for (auto arg : GetTypeArgs()) {
+        for (auto arg : GetTypeArgsRef()) {
             if (arg->IsGenericRelated()) {
                 return true;
             }
@@ -362,6 +362,11 @@ public:
     virtual bool operator==(const Type& other) const;
 
     std::vector<Type*> GetTypeArgs() const
+    {
+        return argTys;
+    }
+
+    const std::vector<Type*>& GetTypeArgsRef() const
     {
         return argTys;
     }

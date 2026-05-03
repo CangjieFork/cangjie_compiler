@@ -312,6 +312,9 @@ void ToCHIR::UselessFuncElimination(const std::string& passName)
 void ToCHIR::ReportUnusedCode()
 {
     Utils::ProfileRecorder recorder("RulesChecking", "ReportUnusedCode");
+    if (!ShouldReportUnusedCodeWarnings()) {
+        return;
+    }
     auto dce = DeadCodeElimination(builder, diag, *chirPkg);
     dce.ReportUnusedCode(*chirPkg, opts);
 }

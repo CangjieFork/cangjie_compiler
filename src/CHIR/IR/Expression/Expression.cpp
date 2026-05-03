@@ -2072,6 +2072,11 @@ std::vector<Type*> GetInstantiateValue::GetInstantiateTypes() const
     return instantiateTys;
 }
 
+const std::vector<Type*>& GetInstantiateValue::GetInstantiateTypesRef() const
+{
+    return instantiateTys;
+}
+
 GetInstantiateValue::GetInstantiateValue(Value* val, std::vector<Type*> insTypes, Block* parent)
     : Expression(ExprKind::GET_INSTANTIATE_VALUE, {val}, {}, parent), instantiateTys(insTypes)
 {

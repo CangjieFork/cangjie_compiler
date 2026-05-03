@@ -127,6 +127,11 @@ std::vector<Expression*> Value::GetUsers() const
     return users;
 }
 
+const std::vector<Expression*>& Value::GetUsersRef() const
+{
+    return users;
+}
+
 bool Value::IsCompileTimeValue() const
 {
     if (kind == ValueKind::KIND_LITERAL) {
@@ -492,6 +497,11 @@ std::vector<Expression*> Block::GetExpressions() const
     return exprs;
 }
 
+const std::vector<Expression*>& Block::GetExpressionsRef() const
+{
+    return exprs;
+}
+
 Expression* Block::GetExpressionByIdx(size_t idx) const
 {
     CJC_ASSERT(idx < exprs.size());
@@ -559,6 +569,11 @@ std::vector<Block*> Block::GetSuccessors() const
 }
 
 std::vector<Block*> Block::GetPredecessors() const
+{
+    return predecessors;
+}
+
+const std::vector<Block*>& Block::GetPredecessorsRef() const
 {
     return predecessors;
 }
@@ -750,6 +765,11 @@ void BlockGroup::SetOwnerFunc(Function* func)
 }
 
 std::vector<Block*> BlockGroup::GetBlocks() const
+{
+    return blocks;
+}
+
+const std::vector<Block*>& BlockGroup::GetBlocksRef() const
 {
     return blocks;
 }
@@ -1195,6 +1215,11 @@ FuncType* Function::GetOriginalLambdaType() const
 }
 
 std::vector<GenericType*> Function::GetOriginalGenericTypeParams() const
+{
+    return funcKind == LAMBDA ? originalLambdaInfo.genericTypeParams : GetGenericTypeParams();
+}
+
+const std::vector<GenericType*>& Function::GetOriginalGenericTypeParamsRef() const
 {
     return funcKind == LAMBDA ? originalLambdaInfo.genericTypeParams : GetGenericTypeParams();
 }

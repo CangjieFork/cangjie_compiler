@@ -123,6 +123,11 @@ std::vector<EnumDef*> Package::GetImportedEnums() const
     return importedEnums;
 }
 
+const std::vector<EnumDef*>& Package::GetImportedEnumsRef() const
+{
+    return importedEnums;
+}
+
 void Package::SetPackageAccessLevel(const AccessLevel& level)
 {
     pkgAccessLevel = level;
@@ -163,6 +168,11 @@ std::vector<ExtendDef*> Package::GetImportedExtends() const
     return importedExtends;
 }
 
+const std::vector<ExtendDef*>& Package::GetImportedExtendsRef() const
+{
+    return importedExtends;
+}
+
 void Package::AddImportedEnum(EnumDef* item)
 {
     importedEnums.emplace_back(item);
@@ -173,7 +183,17 @@ std::vector<ClassDef*> Package::GetImportedClasses() const
     return importedClasses;
 }
 
+const std::vector<ClassDef*>& Package::GetImportedClassesRef() const
+{
+    return importedClasses;
+}
+
 std::vector<StructDef*> Package::GetImportedStructs() const
+{
+    return importedStructs;
+}
+
+const std::vector<StructDef*>& Package::GetImportedStructsRef() const
 {
     return importedStructs;
 }
@@ -326,12 +346,22 @@ std::vector<Function*> Package::GetGlobalFunctions(bool includePureAbstract) con
     return globalFuncs;
 }
 
+const std::vector<Function*>& Package::GetGlobalFunctionsRef() const
+{
+    return globalFuncs;
+}
+
 void Package::SetAllGlobalVars(std::vector<GlobalVar*>&& vars)
 {
     globalVars = std::move(vars);
 }
 
 std::vector<GlobalVar*> Package::GetGlobalVars() const
+{
+    return globalVars;
+}
+
+const std::vector<GlobalVar*>& Package::GetGlobalVarsRef() const
 {
     return globalVars;
 }

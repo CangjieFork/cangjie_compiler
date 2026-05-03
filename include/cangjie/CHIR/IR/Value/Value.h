@@ -121,6 +121,7 @@ public:
     std::string GetIdentifierWithoutPrefix() const;
 
     std::vector<Expression*> GetUsers() const;
+    const std::vector<Expression*>& GetUsersRef() const;
 
     // we replace `this` with `newValue` in `scope`, when `scope` is nullptr, we replace nodes in package scope
     void ReplaceWith(Value& newValue, const BlockGroup* scope = nullptr);
@@ -297,6 +298,7 @@ public:
 
     std::vector<Block*> GetSuccessors() const;
     std::vector<Block*> GetPredecessors() const;
+    const std::vector<Block*>& GetPredecessorsRef() const;
 
     std::vector<ClassType*> GetExceptions() const;
     void SetExceptions(const std::vector<ClassType*>& ep);
@@ -311,6 +313,7 @@ public:
     void AppendExpression(Expression* expression);
     Expression* GetExpressionByIdx(size_t idx) const;
     std::vector<Expression*> GetExpressions() const;
+    const std::vector<Expression*>& GetExpressionsRef() const;
     size_t GetExpressionsNum() const;
     std::vector<Expression*> GetNonTerminatorExpressions() const;
     Terminator* GetTerminator() const;
@@ -399,6 +402,7 @@ public:
     void AddBlocks(const std::vector<Block*>& newBlocks);
     Block* GetBlockByIdx(size_t idx) const;
     std::vector<Block*> GetBlocks() const;
+    const std::vector<Block*>& GetBlocksRef() const;
 
     Block* GetEntryBlock() const;
     void SetEntryBlock(Block* block);
@@ -561,6 +565,7 @@ public:
     void SetOriginalLambdaInfo(const FuncSigInfo& info);
     FuncType* GetOriginalLambdaType() const;
     std::vector<GenericType*> GetOriginalGenericTypeParams() const;
+    const std::vector<GenericType*>& GetOriginalGenericTypeParamsRef() const;
 
     size_t GetNumOfParams() const;
     FuncType* GetFuncType() const;

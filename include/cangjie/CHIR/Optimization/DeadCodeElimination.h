@@ -13,7 +13,12 @@
 #include "cangjie/CHIR/IR/Package.h"
 #include "cangjie/Utils/TaskQueue.h"
 
+#include <string>
+#include <unordered_map>
+
 namespace Cangjie::CHIR {
+bool ShouldReportUnusedCodeWarnings();
+
 /**
  * CHIR Opt Pass: summary of useless code elimination pass.
  */
@@ -87,6 +92,8 @@ private:
     CHIRBuilder& builder;
     DiagnosticEngine& diag;
     const Package& curPkg;
+    const std::string curPkgName;
+    mutable std::unordered_map<unsigned int, bool> crossPackageCache;
 
     // =============== Functions for Useless Variable Check =============== //
     void UselessVariableCheckForFunc(const BlockGroup& funcBody, bool isDebug);
@@ -118,15 +125,16 @@ private:
 
     // =============== Functions for dce reporter =============== //
     void TryReportUnusedOnExpr(Expression& expr, const GlobalOptions& opts, bool blockUsed);
-    void ReportUnusedFunc(const Function& func, const GlobalOptions& opts);
+    bool IsCrossPackageCached(const Cangjie::Position& pos) const;
+    void ReportUnusedFunc(const Function& func, const GlobalOptions& opts, bool usingReflectPackage);
     void ReportUnusedGlobalVar(const GlobalVar& globalVar);
     void DiagUnusedVariable(const Debug& expr);
     void ReportUnusedLocalVariable(const Expression& expr, bool isDebug);
     void ReportUnusedExpression(Expression& expr);
     template <typename... Args> void DiagUnusedCode(
         const std::pair<bool, Cangjie::Range>& nodeRange, DiagKindRefactor diagKind, Args&& ... args);
-    void DiagUnusedVariableForParam(const Debug& expr);
-    void DiagUnusedVariableForLocalVar(const Debug& expr, bool isDebug);
+    void DiagUnusedVariableForParam(const Debug& expr, const std::vector<Expression*>& users);
+    void DiagUnusedVariableForLocalVar(const Debug& expr, bool isDebug, const std::vector<Expression*>& users);
     void DiagUnusedLambdaVariable(const Debug& expr);
     std::string GetLiteralFromExprKind(const ExprKind& kind) const;
 

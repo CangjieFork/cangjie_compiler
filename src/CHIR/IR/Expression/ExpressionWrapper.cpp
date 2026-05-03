@@ -71,6 +71,12 @@ std::vector<Type*> FuncCallBase::GetInstantiatedTypeArgs() const
                 : exprE->GetInstantiatedTypeArgs();
 }
 
+const std::vector<Type*>& FuncCallBase::GetInstantiatedTypeArgsRef() const
+{
+    return expr ? expr->GetInstantiatedTypeArgs()
+                : exprE->GetInstantiatedTypeArgs();
+}
+
 ApplyBase::ApplyBase(const Expression* e) : FuncCallBase(e)
 {
     CJC_NULLPTR_CHECK(e);
@@ -129,6 +135,12 @@ DynamicDispatchBase::DynamicDispatchBase(const DynamicDispatchWithException* exp
 }
 
 std::vector<GenericType*> DynamicDispatchBase::GetGenericTypeParams() const
+{
+    return expr ? expr->GetGenericTypeParams()
+                : exprE->GetGenericTypeParams();
+}
+
+const std::vector<GenericType*>& DynamicDispatchBase::GetGenericTypeParamsRef() const
 {
     return expr ? expr->GetGenericTypeParams()
                 : exprE->GetGenericTypeParams();
@@ -376,6 +388,12 @@ IntrinsicKind IntrinsicBase::GetIntrinsicKind() const
 }
 
 std::vector<Type*> IntrinsicBase::GetInstantiatedTypeArgs() const
+{
+    return expr ? expr->GetInstantiatedTypeArgs()
+                : exprE->GetInstantiatedTypeArgs();
+}
+
+const std::vector<Type*>& IntrinsicBase::GetInstantiatedTypeArgsRef() const
 {
     return expr ? expr->GetInstantiatedTypeArgs()
                 : exprE->GetInstantiatedTypeArgs();

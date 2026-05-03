@@ -2158,6 +2158,7 @@ public:
     // Base Information
     // ===--------------------------------------------------------------------===//
     std::vector<Type*> GetInstantiateTypes() const;
+    const std::vector<Type*>& GetInstantiateTypesRef() const;
 
     Value* GetGenericResult() const;
 

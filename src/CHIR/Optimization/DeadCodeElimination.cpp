@@ -10,6 +10,7 @@
 #include "cangjie/CHIR/Utils/CHIRCasting.h"
 #include "cangjie/CHIR/Utils/Utils.h"
 #include "cangjie/CHIR/Utils/Visitor/Visitor.h"
+#include "cangjie/Option/Option.h"
 
 #include <future>
 #include <queue>
@@ -17,8 +18,13 @@
 namespace Cangjie::CHIR {
 
 DeadCodeElimination::DeadCodeElimination(CHIRBuilder& builder, DiagnosticEngine& diag, const Package& curPkg)
-    : builder(builder), diag(diag), curPkg(curPkg)
+    : builder(builder), diag(diag), curPkg(curPkg), curPkgName(curPkg.GetName())
 {
+}
+
+bool ShouldReportUnusedCodeWarnings()
+{
+    return !WarningOptionMgr::GetInstance()->IsSuppressed(static_cast<size_t>(WarnGroup::UNUSED));
 }
 
 namespace {
@@ -44,11 +50,13 @@ void DumpForDebug(const Ptr<Expression> expr, const Ptr<Function> func, bool isD
 bool AllUsersIsExprKind(const std::vector<Expression*>& users, const ExprKind& kind)
 {
     return std::all_of(users.begin(), users.end(), [&kind](auto user) {
-        auto res = user->GetExprKind() == kind;
-        auto args = user->GetOperands();
-        auto it = std::find_if(args.begin(), args.end(), [](auto item) { return item->GetType()->IsNothing(); });
-        if (res && (it != args.end())) {
-            return true;
+        if (user->GetExprKind() != kind) {
+            return false;
+        }
+        for (size_t i = 0; i < user->GetNumOfOperands(); ++i) {
+            if (user->GetOperand(i)->GetType()->IsNothing()) {
+                return true;
+            }
         }
         return false;
     });
@@ -61,7 +69,7 @@ bool CheckUsersOfExpr(const Expression& expr)
     // var a = 2
     // A(1, 2,return A(), a + 2)
     if (expr.GetResult()) {
-        auto users = expr.GetResult()->GetUsers();
+        const auto& users = expr.GetResult()->GetUsersRef();
         if (AllUsersIsExprKind(users, ExprKind::TUPLE)) {
             return true;
         }
@@ -78,9 +86,9 @@ bool CheckUsersOfExpr(const Expression& expr)
                 1       // have user of store
             }
         */
-        if (expr.GetResult()->GetUsers().size() == 1 && // 1 denote that if epxr has one user of store.
-            expr.GetResult()->GetUsers()[0]->GetExprKind() == ExprKind::STORE) {
-            auto storeNode = expr.GetResult()->GetUsers()[0];
+        if (users.size() == 1 && // 1 denote that if epxr has one user of store.
+            users[0]->GetExprKind() == ExprKind::STORE) {
+            auto storeNode = users[0];
             auto [res, nodeRange] = ToRangeIfNotZero(storeNode->GetDebugLocation());
             if (!res) {
                 return true;
@@ -103,8 +111,8 @@ std::string GetFuncIdent(const Function& func)
 
 void ClearRemovedFuncParamDftValHostFunc(Package& package)
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        if (func->TestAttr(Attribute::IMPORTED)) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr || func->TestAttr(Attribute::IMPORTED)) {
             continue;
         }
         auto hostFunc = func->GetParamDftValHostFunc();
@@ -115,23 +123,46 @@ void ClearRemovedFuncParamDftValHostFunc(Package& package)
     }
 }
 
-bool ReflectPackageIsUsed(const Package& package) {
-    for (auto def : package.GetAllImportedCustomTypeDef()) {
+bool ReflectPackageIsUsed(const Package& package)
+{
+    for (auto def : package.GetImportedStructsRef()) {
         if (def->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
             return true;
         }
     }
-    for (auto func: package.GetGlobalFuncsWithBody()) {
-        if (func->IsImportedFunc() && func->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
+    for (auto def : package.GetImportedClassesRef()) {
+        if (def->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
             return true;
         }
     }
-    for (auto var : package.GetGlobalVarsWithInit()) {
-        if (var->IsImportedVar() && var->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
+    for (auto def : package.GetImportedEnumsRef()) {
+        if (def->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
+            return true;
+        }
+    }
+    for (auto def : package.GetImportedExtendsRef()) {
+        if (def->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
+            return true;
+        }
+    }
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() != nullptr && func->IsImportedFunc() &&
+            func->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
+            return true;
+        }
+    }
+    for (auto var : package.GetGlobalVarsRef()) {
+        if (var->GetInitializerValue() != nullptr && var->IsImportedVar() &&
+            var->GetPackageName() == Cangjie::REFLECT_PACKAGE_NAME) {
             return true;
         }
     }
     return false;
+}
+
+bool IdentifierWithoutPrefixIs(const std::string& identifier, const std::string& expected)
+{
+    return identifier.size() == expected.size() + 1 && identifier.compare(1, expected.size(), expected) == 0;
 }
 }  // namespace
 
@@ -198,12 +229,19 @@ void DeadCodeElimination::UselessFuncElimination(Package& package, const GlobalO
 
 void DeadCodeElimination::ReportUnusedCode(const Package& package, const GlobalOptions& opts)
 {
-    for (auto globalVar : package.GetGlobalVarsWithInit()) {
+    auto usingReflectPackage = ReflectPackageIsUsed(curPkg);
+    for (auto globalVar : package.GetGlobalVarsRef()) {
+        if (globalVar->GetInitializerValue() == nullptr) {
+            continue;
+        }
         ReportUnusedGlobalVar(*globalVar);
     }
 
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        ReportUnusedFunc(*func, opts);
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr) {
+            continue;
+        }
+        ReportUnusedFunc(*func, opts, usingReflectPackage);
         bool isCommonFunctionWithoutBody = func->TestAttr(Attribute::SKIP_ANALYSIS);
         if (isCommonFunctionWithoutBody) {
             continue; // Nothing to visit
@@ -214,26 +252,39 @@ void DeadCodeElimination::ReportUnusedCode(const Package& package, const GlobalO
 
 void DeadCodeElimination::TryReportUnusedOnExpr(Expression& expr, const GlobalOptions& opts, bool blockUsed)
 {
-    ReportUnusedLocalVariable(expr, opts.enableCompileDebug);
-    if (blockUsed) {
+    auto kind = expr.GetExprKind();
+    if (kind == ExprKind::DEBUGEXPR) {
+        ReportUnusedLocalVariable(expr, opts.enableCompileDebug);
+    } else if (blockUsed) {
         ReportUnusedExpression(expr);
     }
-    if (expr.GetExprKind() == ExprKind::LAMBDA) {
+    if (kind == ExprKind::LAMBDA) {
         ReportUnusedCodeInFunc(*StaticCast<const Lambda>(expr).GetBody(), opts);
     }
 }
 
+bool DeadCodeElimination::IsCrossPackageCached(const Cangjie::Position& pos) const
+{
+    auto found = crossPackageCache.find(pos.fileID);
+    if (found != crossPackageCache.end()) {
+        return found->second;
+    }
+    auto result = IsCrossPackage(pos, curPkgName, diag);
+    crossPackageCache.emplace(pos.fileID, result);
+    return result;
+}
+
 void DeadCodeElimination::ReportUnusedCodeInFunc(const BlockGroup& body, const GlobalOptions& opts)
 {
-    for (auto block : body.GetBlocks()) {
+    for (auto block : body.GetBlocksRef()) {
         auto blockUsed = !CheckUselessBlock(*block);
-        for (auto expr : block->GetExpressions()) {
+        for (auto expr : block->GetExpressionsRef()) {
             TryReportUnusedOnExpr(*expr, opts, blockUsed);
         }
     }
 }
 
-void DeadCodeElimination::ReportUnusedFunc(const Function& func, const GlobalOptions& opts)
+void DeadCodeElimination::ReportUnusedFunc(const Function& func, const GlobalOptions& opts, bool usingReflectPackage)
 {
     if (func.Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
         return;
@@ -260,7 +311,7 @@ void DeadCodeElimination::ReportUnusedFunc(const Function& func, const GlobalOpt
                 continue;
             }
             auto [res, nodeRange] = GetDebugPos(*expr);
-            if (res && !IsCrossPackage(nodeRange.begin, curPkg.GetName(), diag)) {
+            if (res && !IsCrossPackageCached(nodeRange.begin)) {
                 diag.DiagnoseRefactor(DiagKindRefactor::chir_dce_unreachable_function, nodeRange);
             }
             continue;
@@ -271,7 +322,6 @@ void DeadCodeElimination::ReportUnusedFunc(const Function& func, const GlobalOpt
         return;
     }
     // check unused function
-    auto usingReflectPackage = ReflectPackageIsUsed(curPkg);
     if (!func.TestAttr(Attribute::COMPILER_ADD) && CheckUselessFunc(func, opts, usingReflectPackage)) {
         auto ident = GetFuncIdent(func);
         auto debugPos = GetDebugPos(func);
@@ -307,7 +357,7 @@ void DeadCodeElimination::ReportUnusedGlobalVar(const GlobalVar& globalVar)
     if (globalVar.Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
         return;
     }
-    auto gvUsers = globalVar.GetUsers();
+    const auto& gvUsers = globalVar.GetUsersRef();
     // 1、unused const may have 0 or 1 user.
     // 2、unused 'let' global variable may have 0 or 1 user.
     // 3、unused 'var' global variable has one user and this user must be store
@@ -324,10 +374,9 @@ void DeadCodeElimination::ReportUnusedGlobalVar(const GlobalVar& globalVar)
     }
 }
 
-void DeadCodeElimination::DiagUnusedVariableForParam(const Debug& expr)
+void DeadCodeElimination::DiagUnusedVariableForParam(const Debug& expr, const std::vector<Expression*>& users)
 {
     auto operand = expr.GetOperand(0);
-    auto users = operand->GetUsers();
     // "_" param should not check
     if (operand->GetSrcCodeIdentifier() == "_") {
         return;
@@ -345,22 +394,22 @@ void DeadCodeElimination::DiagUnusedLambdaVariable(const Debug& expr)
         auto realVar = StaticCast<LocalVar*>(closureExpr->GetExpr()->GetOperand(1));
         if (realVar->GetExpr()->GetExprKind() == ExprKind::TYPECAST) {
             auto typecastVar = StaticCast<LocalVar*>(realVar->GetExpr()->GetOperand(0));
-            auto users = typecastVar->GetUsers();
+            const auto& users = typecastVar->GetUsersRef();
             if (users.back() == realVar->GetExpr()) {
                 DiagUnusedVariable(expr);
             }
         } else {
-            auto users = realVar->GetUsers();
+            const auto& users = realVar->GetUsersRef();
             if (users.back() == closureExpr->GetExpr()) {
                 DiagUnusedVariable(expr);
             }
         }
     }
 }
-void DeadCodeElimination::DiagUnusedVariableForLocalVar(const Debug& expr, bool isDebug)
+void DeadCodeElimination::DiagUnusedVariableForLocalVar(
+    const Debug& expr, bool isDebug, const std::vector<Expression*>& users)
 {
     auto operand = expr.GetOperand(0);
-    auto users = operand->GetUsers();
     // unused 'var' variable have 2 situtation
     // when it has init value, 'var' has 2 users: debug, store
     // when it does not has init value, 'var' has 1 users: debug
@@ -387,7 +436,7 @@ void DeadCodeElimination::DiagUnusedVariableForLocalVar(const Debug& expr, bool 
 void DeadCodeElimination::DiagUnusedVariable(const Debug& expr)
 {
     auto nodeRange = GetDebugPos(expr);
-    if (nodeRange.first && !IsCrossPackage(nodeRange.second.begin, curPkg.GetName(), diag)) {
+    if (nodeRange.first && !IsCrossPackageCached(nodeRange.second.begin)) {
         diag.DiagnoseRefactor(
             DiagKindRefactor::chir_dce_unused_variable, nodeRange.second, expr.GetSrcCodeIdentifier());
     }
@@ -417,11 +466,11 @@ void DeadCodeElimination::ReportUnusedLocalVariable(const Expression& expr, bool
     if (operand->GetType()->IsVArray()) {
         return;
     }
-    auto users = operand->GetUsers();
+    const auto& users = operand->GetUsersRef();
     if (operand->IsParameter()) {
-        DiagUnusedVariableForParam(debugExpr);
+        DiagUnusedVariableForParam(debugExpr, users);
     } else if (operand->IsLocalVar()) {
-        DiagUnusedVariableForLocalVar(debugExpr, isDebug);
+        DiagUnusedVariableForLocalVar(debugExpr, isDebug, users);
     }
 }
 
@@ -442,7 +491,7 @@ bool DeadCodeElimination::CheckAllUsersIsNotUse(const Value& value, const std::v
 {
     return std::all_of(users.begin(), users.end(), [&value](auto user) {
         if (user->GetExprKind() == ExprKind::LOAD) {
-            return user->GetResult()->GetUsers().empty();
+            return user->GetResult()->GetUsersRef().empty();
         }
         // store is not a use; load is.
         // not including storeelementref here because that may lead to a large scale of testcases adjustment
@@ -462,21 +511,22 @@ bool DeadCodeElimination::CheckAllUsersIsNotUse(const Value& value, const std::v
 
 void DeadCodeElimination::ReportUnusedExpression(Expression& expr)
 {
+    if (expr.Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
+        return;
+    }
+    auto result = expr.GetResult();
+    if (result != nullptr && result->Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
+        return;
+    }
     if (CheckUselessExpr(expr, true)) {
         // Some special expression has no users, but should not print warning.
         // for example cangjie code:
         // let x = match (true) {   --------------->`true` has no users, but shoud not print warning.
         //      case _ : (Bool,Int64) => 0
         // }
-        if (expr.Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
-            return;
-        }
-        if (expr.GetResult()->Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
-            return;
-        }
         auto res = GetDebugPos(expr);
         if (res.first) {
-            if (IsCrossPackage(res.second.begin, curPkg.GetName(), diag)) {
+            if (IsCrossPackageCached(res.second.begin)) {
                 return;
             }
             if (expr.GetExprKind() == ExprKind::LAMBDA) {
@@ -496,7 +546,10 @@ void DeadCodeElimination::ReportUnusedExpression(Expression& expr)
 
 void DeadCodeElimination::UselessExprElimination(const Package& package, bool isDebug) const
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr) {
+            continue;
+        }
         UselessExprEliminationForFunc(*func, isDebug);
     }
 }
@@ -505,8 +558,8 @@ void DeadCodeElimination::UselessExprEliminationForFunc(const Function& func, bo
 {
     std::queue<Expression*> worklist;
     std::unordered_set<Expression*> worklistSet;
-    for (auto block : func.GetBody()->GetBlocks()) {
-        for (auto expr : block->GetExpressions()) {
+    for (auto block : func.GetBody()->GetBlocksRef()) {
+        for (auto expr : block->GetExpressionsRef()) {
             if (CheckUselessExpr(*expr)) {
                 worklist.push(expr);
                 worklistSet.emplace(expr);
@@ -537,9 +590,8 @@ void DeadCodeElimination::UselessExprEliminationForFunc(const Function& func, bo
 
 void DeadCodeElimination::NothingTypeExprElimination(const Package& package, bool isDebug)
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        bool isCommonFunctionWithoutBody = func->TestAttr(Attribute::SKIP_ANALYSIS);
-        if (isCommonFunctionWithoutBody) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr || func->TestAttr(Attribute::SKIP_ANALYSIS)) {
             continue; // Nothing to visit
         }
         NothingTypeExprEliminationForFunc(*func->GetBody(), isDebug);
@@ -665,9 +717,8 @@ void DeadCodeElimination::NothingTypeExprEliminationForFunc(BlockGroup& funcBody
 
 void DeadCodeElimination::UnreachableBlockElimination(const Package& package, bool isDebug) const
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        bool isCommonFunctionWithoutBody = func->TestAttr(Attribute::SKIP_ANALYSIS);
-        if (isCommonFunctionWithoutBody) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr || func->TestAttr(Attribute::SKIP_ANALYSIS)) {
             continue; // Nothing to visit
         }
         UnreachableBlockEliminationForFunc(*func->GetBody(), isDebug);
@@ -698,7 +749,10 @@ void DeadCodeElimination::UnreachableBlockWarningReporter(const Package& package
 void DeadCodeElimination::UnreachableBlockWarningReporterInSerial(
     const Package& package, const std::unordered_map<Block*, Terminator*>& maybeUnreachableBlocks)
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr) {
+            continue;
+        }
         bool isPrinted = false;
         Visitor::Visit(*func, [this, &isPrinted, &maybeUnreachableBlocks](Block& block) {
             auto it = maybeUnreachableBlocks.find(&block);
@@ -717,9 +771,8 @@ void DeadCodeElimination::UnreachableBlockWarningReporterInParallel(const Packag
     size_t threadsNum, const std::unordered_map<Block*, Terminator*>& maybeUnreachableBlocks)
 {
     Utils::TaskQueue taskQueue(threadsNum);
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        bool isCommonFunctionWithoutBody = func->TestAttr(Attribute::SKIP_ANALYSIS);
-        if (isCommonFunctionWithoutBody) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr || func->TestAttr(Attribute::SKIP_ANALYSIS)) {
             continue; // Nothing to visit
         }
 
@@ -780,7 +833,7 @@ std::optional<Block*> GetMultiBranchTargetSucc(const MultiBranch& branch)
     } else {
         Cangjie::InternalError("Unexpected const val kind");
     }
-    auto cases = branch.GetCaseVals();
+    const auto& cases = branch.GetCaseVals();
     for (size_t i = 0; i < cases.size(); ++i) {
         if (condVal == cases[i]) {
             return branch.GetSuccessor(i + 1);
@@ -792,7 +845,7 @@ std::optional<Block*> GetMultiBranchTargetSucc(const MultiBranch& branch)
 
 void DeadCodeElimination::UnreachableBlockEliminationForFunc(const BlockGroup& body, bool isDebug) const
 {
-    auto blocks = body.GetBlocks();
+    const auto& blocks = body.GetBlocksRef();
     std::unordered_set<Block*> isUnreachable(blocks.begin(), blocks.end());
     std::queue<Block*> workList;
 
@@ -804,7 +857,7 @@ void DeadCodeElimination::UnreachableBlockEliminationForFunc(const BlockGroup& b
         auto block = workList.front();
         workList.pop();
 
-        for (auto expr : block->GetExpressions()) {
+        for (auto expr : block->GetExpressionsRef()) {
             if (expr->GetExprKind() == ExprKind::LAMBDA) {
                 UnreachableBlockEliminationForFunc(*StaticCast<const Lambda*>(expr)->GetBody(), isDebug);
             }
@@ -822,7 +875,7 @@ void DeadCodeElimination::UnreachableBlockEliminationForFunc(const BlockGroup& b
         if (targetSucc.has_value()) {
             auto cond = terminator->GetOperand(0);
             terminator->RemoveSelfFromBlock();
-            if (cond->IsLocalVar() && cond->GetUsers().empty()) {
+            if (cond->IsLocalVar() && cond->GetUsersRef().empty()) {
                 auto expr = StaticCast<LocalVar*>(cond)->GetExpr();
                 expr->RemoveSelfFromBlock();
             }
@@ -830,8 +883,10 @@ void DeadCodeElimination::UnreachableBlockEliminationForFunc(const BlockGroup& b
             block->AppendExpression(builder.CreateTerminator<GoTo>(targetSucc.value(), block));
         }
 
-        auto succs = block->GetSuccessors();
-        for (auto succ : succs) {
+        auto updatedTerminator = block->GetTerminator();
+        CJC_NULLPTR_CHECK(updatedTerminator);
+        for (size_t i = 0; i < updatedTerminator->GetNumOfSuccessor(); ++i) {
+            auto succ = updatedTerminator->GetSuccessor(i);
             if (isUnreachable.find(succ) != isUnreachable.end()) {
                 isUnreachable.erase(succ);
                 workList.push(succ);
@@ -855,7 +910,7 @@ void DeadCodeElimination::BreakBranchConnection(const Block& block) const
             CJC_ASSERT(&block == branch->GetFalseBlock());
             auto target = branch->GetTrueBlock();
             branch->RemoveSelfFromBlock();
-            if (oprand->GetUsers().empty()) {
+            if (oprand->GetUsersRef().empty()) {
                 auto expr = StaticCast<LocalVar*>(oprand)->GetExpr();
                 expr->RemoveSelfFromBlock();
             }
@@ -870,9 +925,8 @@ void DeadCodeElimination::BreakBranchConnection(const Block& block) const
 
 void DeadCodeElimination::ClearUnreachableMarkBlock(const Package& package) const
 {
-    for (auto func : package.GetGlobalFuncsWithBody()) {
-        bool isCommonFunctionWithoutBody = func->TestAttr(Attribute::SKIP_ANALYSIS);
-        if (isCommonFunctionWithoutBody) {
+    for (auto func : package.GetGlobalFunctionsRef()) {
+        if (func->GetBody() == nullptr || func->TestAttr(Attribute::SKIP_ANALYSIS)) {
             continue; // Nothing to visit
         }
         ClearUnreachableMarkBlockForFunc(*func->GetBody());
@@ -883,7 +937,7 @@ void DeadCodeElimination::ClearUnreachableMarkBlockForFunc(const BlockGroup& bod
 {
     for (auto block : body.GetBlocks()) {
         if (!block->TestAttr(Attribute::UNREACHABLE)) {
-            for (auto expr : block->GetExpressions()) {
+            for (auto expr : block->GetExpressionsRef()) {
                 if (expr->GetExprKind() == ExprKind::LAMBDA) {
                     ClearUnreachableMarkBlockForFunc(*StaticCast<const Lambda*>(expr)->GetBody());
                 }
@@ -897,24 +951,25 @@ void DeadCodeElimination::ClearUnreachableMarkBlockForFunc(const BlockGroup& bod
 
 bool DeadCodeElimination::CheckUselessFunc(const Function& func, const GlobalOptions& opts, bool usingReflectPackage)
 {
-    if (!func.GetUsers().empty()) {
+    if (!func.GetUsersRef().empty()) {
         return false;
     }
     if (func.GetFuncKind() == CHIR::FuncKind::ANNOFACTORY_FUNC) {
         return false;
     }
-    if (func.GetIdentifierWithoutPrefix() == USER_MAIN_MANGLED_NAME) {
+    const auto& identifier = func.GetIdentifier();
+    if (IdentifierWithoutPrefixIs(identifier, USER_MAIN_MANGLED_NAME)) {
         return false;
     }
     if (&func == curPkg.GetPackageInitFunc() || &func == curPkg.GetPackageLiteralInitFunc()) {
         // skip package init function
         return false;
     }
-    if (func.GetIdentifier().find(STD_CORE_FUTURE_MANGLED_NAME) != std::string::npos) {
+    if (identifier.find(STD_CORE_FUTURE_MANGLED_NAME) != std::string::npos) {
         // All func names contains "*_CNat6Future*" is Future related series functions.
         return false;
     }
-    if (func.GetIdentifier().find(ANNOTATION_VAR_POSTFIX) != std::string::npos) {
+    if (identifier.find(ANNOTATION_VAR_POSTFIX) != std::string::npos) {
         // annotation var init functions are to be evaluated are removed by const eval
         return false;
     }
@@ -958,12 +1013,12 @@ bool DeadCodeElimination::CheckUselessFunc(const Function& func, const GlobalOpt
 // Check whether the block is unreachable.
 bool DeadCodeElimination::CheckUselessBlock(const Block& block) const
 {
-    return !block.IsEntry() && block.GetPredecessors().empty() && !block.TestAttr(Attribute::UNREACHABLE);
+    return !block.IsEntry() && block.GetPredecessorsRef().empty() && !block.TestAttr(Attribute::UNREACHABLE);
 }
 
 Ptr<Expression> DeadCodeElimination::GetUnreachableExpression(const CHIR::Block& block, bool& isNormal) const
 {
-    auto expressions = block.GetExpressions();
+    const auto& expressions = block.GetExpressionsRef();
     Ptr<Expression> resExpression = nullptr;
     auto it = std::find_if(expressions.begin(), expressions.end(), [&isNormal, &resExpression, this](auto expression) {
         auto posForWarning = expression->template Get<DebugLocationInfoForWarning>();
@@ -973,10 +1028,14 @@ Ptr<Expression> DeadCodeElimination::GetUnreachableExpression(const CHIR::Block&
             // if operand in binaryExpr is nothing, use warninglocation as report position
             // if all operand in binaryExpr is normal, use binaryExpr location as report position
             if (expression->IsBinaryExpr() || expression->IsIntOpWithException()) {
-                auto args = expression->GetOperands();
-                auto it =
-                    std::find_if(args.begin(), args.end(), [](auto item) { return item->GetType()->IsNothing(); });
-                if (it == args.end()) {
+                bool hasNothingOperand = false;
+                for (size_t i = 0; i < expression->GetNumOfOperands(); ++i) {
+                    if (expression->GetOperand(i)->GetType()->IsNothing()) {
+                        hasNothingOperand = true;
+                        break;
+                    }
+                }
+                if (!hasNothingOperand) {
                     resExpression = expression;
                     isNormal = true;
                     return true;
@@ -994,7 +1053,7 @@ Ptr<Expression> DeadCodeElimination::GetUnreachableExpression(const CHIR::Block&
         }
         auto& debugInfo = expression->GetDebugLocation();
         auto [newResult, debugRange] = ToRangeIfNotZero(debugInfo);
-        if (newResult && !IsCrossPackage(debugRange.begin, curPkg.GetName(), diag)) {
+        if (newResult && !IsCrossPackage(debugRange.begin, curPkgName, diag)) {
             resExpression = expression;
             isNormal = true;
             return true;
@@ -1015,7 +1074,6 @@ void DeadCodeElimination::PrintUnreachableBlockWarning(
     auto [res, terminalNodeRange] = ToRangeIfNotZero(debugInfo);
 
     if (res && !isPrinted) {
-        auto expressions = block.GetExpressions();
         bool isNormal = true;
         if (auto unreableExpr = GetUnreachableExpression(block, isNormal)) {
             auto range = isNormal ? ToRange(unreableExpr->GetDebugLocation())
@@ -1024,7 +1082,7 @@ void DeadCodeElimination::PrintUnreachableBlockWarning(
             if (terminalNodeRange.begin == range.begin) {
                 return;
             }
-            if (IsCrossPackage(terminalNodeRange.begin, curPkg.GetName(), diag)) {
+            if (IsCrossPackage(terminalNodeRange.begin, curPkgName, diag)) {
                 return;
             }
             if (unreableExpr->Get<SkipCheck>() == SkipKind::SKIP_DCE_WARNING) {
@@ -1059,7 +1117,7 @@ void DeadCodeElimination::PrintUnreachableBlockWarning(
 
 bool DeadCodeElimination::CheckUselessExpr(const Expression& expr, bool isReportWarning) const
 {
-    if (expr.GetResult() && !expr.GetResult()->GetUsers().empty()) {
+    if (expr.GetResult() && !expr.GetResult()->GetUsersRef().empty()) {
         return false;
     }
     if (expr.GetExprKind() == ExprKind::INT_OP_WITH_EXCEPTION && expr.Get<NeverOverflowInfo>() && isReportWarning) {
@@ -1113,7 +1171,7 @@ template <typename... Args>
 void DeadCodeElimination::DiagUnusedCode(
     const std::pair<bool, Cangjie::Range>& nodeRange, DiagKindRefactor diagKind, Args&&... args)
 {
-    if (nodeRange.first && !IsCrossPackage(nodeRange.second.begin, curPkg.GetName(), diag)) {
+    if (nodeRange.first && !IsCrossPackageCached(nodeRange.second.begin)) {
         diag.DiagnoseRefactor(diagKind, nodeRange.second, args...);
     }
 }
