@@ -13,6 +13,7 @@
 #ifndef CANGJIE_CONDITIONALCOMPILATION_CONDITIONALCOMPILATIONIMPL_H
 #define CANGJIE_CONDITIONALCOMPILATION_CONDITIONALCOMPILATIONIMPL_H
 
+#include <optional>
 #include <regex>
 #include <unordered_map>
 
@@ -85,6 +86,16 @@ private:
     bool EvalConditionExpr(const Expr& condition);
     bool EvalCachedConditionExpr(const Expr& condition);
 
+    struct JudgeConditionInfo {
+        const std::string* conditionStr;
+        const std::string* rightValue;
+        const std::string* relatedInfo;
+    };
+
+    struct UnaryConditionInfo {
+        const std::string* relatedInfo;
+    };
+
     bool ConditionCheck(const std::string& conditionStr, const Position& begin, const std::string& right);
 
     bool Eval(const BinaryExpr& expr, const std::string& left, const std::string& right) const;
@@ -97,8 +108,11 @@ private:
     bool CheckConditionExpr(const Expr& condition);
     bool CheckBinaryExpr(const BinaryExpr& be);
     bool CheckParenExpr(const ParenExpr& pe);
+    std::optional<UnaryConditionInfo> CheckAndGetUnaryConditionInfo(const UnaryExpr& ue) const;
     bool CheckUnaryExpr(const UnaryExpr& ue) const;
     bool CheckRefExpr(const RefExpr& re) const;
+    JudgeConditionInfo GetJudgeConditionInfo(const BinaryExpr& be) const;
+    std::optional<JudgeConditionInfo> CheckAndGetJudgeConditionInfo(const BinaryExpr& be);
     bool CheckJudgeConditionExpr(const BinaryExpr& be);
     bool CheckConditionOp(const BinaryExpr& be, const std::string& conditionStr) const;
     const std::string* GetDebugOrTestRelatedInfo(const RefExpr& re, const Position& diagnosePos) const;

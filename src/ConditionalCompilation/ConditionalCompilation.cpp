@@ -450,22 +450,37 @@ bool ConditionalCompilationImpl::CheckJudgeBinaryExpr(const BinaryExpr& be) cons
     return true;
 }
 
-bool ConditionalCompilationImpl::CheckJudgeConditionExpr(const BinaryExpr& be)
+ConditionalCompilationImpl::JudgeConditionInfo ConditionalCompilationImpl::GetJudgeConditionInfo(
+    const BinaryExpr& be) const
 {
-    if (!CheckJudgeBinaryExpr(be)) {
-        return false;
-    }
     auto right = RawStaticCast<LitConstExpr*>(be.rightExpr.get());
     auto left = RawStaticCast<RefExpr*>(be.leftExpr.get());
     const auto& conditionStr = left->ref.identifier.Val();
-    const auto& rightValue = right->stringValue;
-    if (!ConditionCheck(conditionStr, be.begin, rightValue)) {
-        return false;
+    return {&conditionStr, &right->stringValue, GetRelatedInfo(conditionStr)};
+}
+
+std::optional<ConditionalCompilationImpl::JudgeConditionInfo> ConditionalCompilationImpl::CheckAndGetJudgeConditionInfo(
+    const BinaryExpr& be)
+{
+    if (!CheckJudgeBinaryExpr(be)) {
+        return std::nullopt;
     }
-    if (GetRelatedInfo(conditionStr) == nullptr) {
-        return false;
+    auto conditionInfo = GetJudgeConditionInfo(be);
+    if (!ConditionCheck(*conditionInfo.conditionStr, be.begin, *conditionInfo.rightValue)) {
+        return std::nullopt;
     }
-    return CheckConditionOp(be, conditionStr);
+    if (conditionInfo.relatedInfo == nullptr) {
+        return std::nullopt;
+    }
+    if (!CheckConditionOp(be, *conditionInfo.conditionStr)) {
+        return std::nullopt;
+    }
+    return conditionInfo;
+}
+
+bool ConditionalCompilationImpl::CheckJudgeConditionExpr(const BinaryExpr& be)
+{
+    return CheckAndGetJudgeConditionInfo(be).has_value();
 }
 
 bool ConditionalCompilationImpl::CheckBinaryExpr(const BinaryExpr& be)
@@ -505,28 +520,34 @@ const std::string* ConditionalCompilationImpl::GetDebugOrTestRelatedInfo(
     return GetRelatedInfo(re.ref.identifier);
 }
 
-bool ConditionalCompilationImpl::CheckUnaryExpr(const UnaryExpr& ue) const
+std::optional<ConditionalCompilationImpl::UnaryConditionInfo> ConditionalCompilationImpl::CheckAndGetUnaryConditionInfo(
+    const UnaryExpr& ue) const
 {
     if (ue.expr == nullptr || ue.expr->astKind != ASTKind::REF_EXPR) {
         (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
-        return false;
+        return std::nullopt;
     }
     auto conditionExpr = RawStaticCast<RefExpr*>(ue.expr.get());
     if (conditionExpr == nullptr) {
         (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
-        return false;
+        return std::nullopt;
     }
     auto relatedInfo = GetDebugOrTestRelatedInfo(*conditionExpr, ue.begin);
     if (relatedInfo == nullptr) {
-        return false;
+        return std::nullopt;
     }
     if (ue.op != TokenKind::NOT) {
         auto builder =
             ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
         builder.AddNote("debug and test builtin conditions only support the logic ! operator");
-        return false;
+        return std::nullopt;
     }
-    return true;
+    return UnaryConditionInfo{relatedInfo};
+}
+
+bool ConditionalCompilationImpl::CheckUnaryExpr(const UnaryExpr& ue) const
+{
+    return CheckAndGetUnaryConditionInfo(ue).has_value();
 }
 
 bool ConditionalCompilationImpl::CheckRefExpr(const RefExpr& re) const
@@ -554,33 +575,21 @@ bool ConditionalCompilationImpl::CheckConditionExpr(const Expr& condition)
 
 bool ConditionalCompilationImpl::EvalJudgeBinaryExpr(const BinaryExpr& be)
 {
-    if (!CheckJudgeBinaryExpr(be)) {
-        return false;
-    }
-    auto right = RawStaticCast<LitConstExpr*>(be.rightExpr.get());
-    auto left = RawStaticCast<RefExpr*>(be.leftExpr.get());
-    const auto& conditionStr = left->ref.identifier.Val();
-    const auto& rightValue = right->stringValue;
-    auto cacheKey = MakeJudgeConditionCacheKey(conditionStr, be.op, rightValue);
+    auto conditionInfo = GetJudgeConditionInfo(be);
+    auto cacheKey = MakeJudgeConditionCacheKey(*conditionInfo.conditionStr, be.op, *conditionInfo.rightValue);
     auto cached = judgeConditionCache.find(cacheKey);
     if (cached != judgeConditionCache.end()) {
         return cached->second;
     }
-    if (!ConditionCheck(conditionStr, be.begin, rightValue)) {
-        return false;
-    }
-    auto relatedInfo = GetRelatedInfo(conditionStr);
+    auto relatedInfo = conditionInfo.relatedInfo;
     if (relatedInfo == nullptr) {
         return false;
     }
-    if (!CheckConditionOp(be, conditionStr)) {
-        return false;
-    }
     // Decode cjc version to judge.
-    auto evalRightValue = &rightValue;
+    auto evalRightValue = conditionInfo.rightValue;
     std::string refreshedRightValue;
-    if (conditionStr == CJC_VERSION_STR) {
-        refreshedRightValue = std::to_string(GetVersionUInt(rightValue));
+    if (*conditionInfo.conditionStr == CJC_VERSION_STR) {
+        refreshedRightValue = std::to_string(GetVersionUInt(*conditionInfo.rightValue));
         refreshedRightValue = RefreshVersionStr(refreshedRightValue);
         evalRightValue = &refreshedRightValue;
     }
@@ -611,25 +620,11 @@ bool ConditionalCompilationImpl::EvalParenExpr(const ParenExpr& pe)
 
 bool ConditionalCompilationImpl::EvalUnaryExpr(const UnaryExpr& ue) const
 {
-    if (ue.expr == nullptr || ue.expr->astKind != ASTKind::REF_EXPR) {
-        (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
+    auto conditionInfo = CheckAndGetUnaryConditionInfo(ue);
+    if (!conditionInfo.has_value()) {
         return false;
     }
-    auto conditionExpr = RawStaticCast<RefExpr*>(ue.expr.get());
-    if (conditionExpr == nullptr) {
-        (void)ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
-        return false;
-    }
-    auto relatedInfo = GetDebugOrTestRelatedInfo(*conditionExpr, ue.begin);
-    if (relatedInfo == nullptr) {
-        return false;
-    }
-    if (ue.op != TokenKind::NOT) { // -debug or -test should compile error
-        auto builder = ci->diag.DiagnoseRefactor(DiagKindRefactor::conditional_compilation_invalid_condition_expr, ue.begin);
-        builder.AddNote("debug and test builtin conditions only support the logic ! operator");
-        return false;
-    }
-    return *relatedInfo != CONDITION_TRUE; // !debug or !test
+    return *conditionInfo->relatedInfo != CONDITION_TRUE; // !debug or !test
 }
 
 bool ConditionalCompilationImpl::EvalRefExpr(const RefExpr& re) const
