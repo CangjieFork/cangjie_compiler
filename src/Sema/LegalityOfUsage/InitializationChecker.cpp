@@ -368,9 +368,19 @@ void InitializationChecker::UpdateScopeStatus(const Node& node)
     if (auto [it, success] =
             variablesBeforeTeminatedScope.try_emplace(scopeGate, std::unordered_set<Ptr<const AST::Decl>>{});
         success) {
-        it->second.reserve(contextVariables.size());
-        for (auto& [_, vars] : contextVariables) {
-            it->second.insert(vars.cbegin(), vars.cend());
+        // Collect only the variables visible at the terminator, i.e. those declared in the
+        // terminated scope and its enclosing scope gates. Iterating the whole `contextVariables`
+        // map here is O(number-of-scopes) per terminator; since the map holds one entry per
+        // analyzed scope, that made initialization checking O(decls^2) on packages with many
+        // functions/terminators. Walking only the ancestor gate chain (the same idiom used by
+        // ScopeManager::GetCurSatisfiedSymbol) is O(scope-depth) and yields the identical
+        // visible-variable set, because variables of sibling/unrelated scopes are never visible
+        // at this terminator.
+        for (std::string gate = scopeGate; !gate.empty(); gate = ScopeManagerApi::GetScopeGateName(gate)) {
+            auto fit = contextVariables.find(gate);
+            if (fit != contextVariables.end()) {
+                it->second.insert(fit->second.cbegin(), fit->second.cend());
+            }
         }
         scopeTerminationKinds[scopeGate] = node.astKind;
     }
