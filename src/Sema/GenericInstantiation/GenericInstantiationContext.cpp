@@ -263,6 +263,10 @@ std::set<Ptr<ExtendDecl>> GetAllRelatedExtendsByTy(TypeManager& typeManager, Ty&
 std::unordered_set<Ptr<FuncDecl>> GIM::GenericInstantiationManagerImpl::GetInheritedMemberFuncs(
     Ty& ty)
 {
+    // Memoized: deep hierarchies re-request the same ancestor type's inherited funcs many times.
+    if (auto cached = inheritedMemberFuncsCache.find(&ty); cached != inheritedMemberFuncsCache.end()) {
+        return cached->second;
+    }
     std::unordered_set<Ptr<FuncDecl>> funcs;
     auto baseDecl = Ty::GetDeclPtrOfTy<InheritableDecl>(&ty);
     if (baseDecl) {
@@ -278,12 +282,17 @@ std::unordered_set<Ptr<FuncDecl>> GIM::GenericInstantiationManagerImpl::GetInher
         CollectDeclMemberFuncs(*ed, funcs);
     }
 
+    inheritedMemberFuncsCache.emplace(&ty, funcs);
     return funcs;
 }
 
 std::unordered_set<Ptr<InheritableDecl>> GIM::GenericInstantiationManagerImpl::GetInheritedInterfaces(
     Ty& ty)
 {
+    // Memoized: deep hierarchies re-request the same ancestor type's inherited interfaces many times.
+    if (auto cached = inheritedInterfacesCache.find(&ty); cached != inheritedInterfacesCache.end()) {
+        return cached->second;
+    }
     std::unordered_set<Ptr<InheritableDecl>> inheritableType;
     // Collect interfaces that are explict implemented by the 'decl'.
     auto collectInterfaces = [&inheritableType](const InheritableDecl& decl) {
@@ -334,6 +343,7 @@ std::unordered_set<Ptr<InheritableDecl>> GIM::GenericInstantiationManagerImpl::G
             inheritableType.insert(id);
         }
     }
+    inheritedInterfacesCache.emplace(&ty, inheritableType);
     return inheritableType;
 }
 
@@ -507,6 +517,11 @@ void GIM::GenericInstantiationManagerImpl::BuildAbstractFuncMap()
 {
     Utils::ProfileRecorder::Start("BuildAbstractFuncMap", "primitive types");
     abstractFuncToDeclMap.clear();
+    // The hierarchy is fixed within a single BuildAbstractFuncMap invocation, so memoize the pure
+    // inherited-funcs/interfaces queries for this pass; clear so a later invocation (after more
+    // instantiation) recomputes against the updated hierarchy.
+    inheritedMemberFuncsCache.clear();
+    inheritedInterfacesCache.clear();
     // For primitive types.
     for (auto& it : typeManager.builtinTyToExtendMap) {
         BuildAbstractFuncMapHelper(*it.first);

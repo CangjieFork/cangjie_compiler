@@ -145,6 +145,13 @@ private:
     std::unordered_map<std::pair<Ptr<AST::Ty>, Ptr<AST::FuncDecl>>,
         std::unordered_set<std::pair<Ptr<AST::Decl>, size_t>, HashPair>, HashPair>
         abstractFuncToDeclMap;
+    /** Per-BuildAbstractFuncMap-pass memoization for GetInheritedMemberFuncs/GetInheritedInterfaces.
+     * Both are pure functions of the type, but BuildAbstractFuncMapHelper re-derives them for every
+     * ancestor of every class. On deep inheritance chains (e.g. deep COM/vtable hierarchies) the same
+     * ancestor types are recomputed O(depth) times each, making the pass scale ~O(N * depth^3). Caching
+     * by Ty* collapses that to one computation per distinct type. Cleared at each BuildAbstractFuncMap. */
+    std::unordered_map<Ptr<AST::Ty>, std::unordered_set<Ptr<AST::FuncDecl>>> inheritedMemberFuncsCache;
+    std::unordered_map<Ptr<AST::Ty>, std::unordered_set<Ptr<AST::InheritableDecl>>> inheritedInterfacesCache;
     std::unordered_map<Ptr<AST::Decl>, size_t> membersIndexMap;
     std::unordered_map<Ptr<const AST::Decl>, std::vector<size_t>> skippedMemberOffsets;
     /** Node kinds which should be ignored in walker. */
