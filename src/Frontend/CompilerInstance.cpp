@@ -428,6 +428,14 @@ bool CompilerInstance::PerformMacroExpand()
 {
     auto ret = compileStrategy->MacroExpand();
 
+    // When a group of mutually-dependent (cyclic) source packages is compiled together, their member
+    // declMaps and the source-import index were built before this macro expansion and therefore missed
+    // every macro-annotated decl. Rebuild them now so a sibling's wildcard import can see the
+    // macro-generated declarations. No-op for the common single source-package compilation.
+    if (ret) {
+        importManager->ReindexSourcePackagesAfterMacroExpand(GetSourcePackages());
+    }
+
     // Constant evaluation and the interpreter needs to load bchir, which requires an AST loader.
     if (!invocation.globalOptions.IsConstEvalEnabled() && !invocation.globalOptions.interpreter) {
         importManager->DeleteASTLoaders();

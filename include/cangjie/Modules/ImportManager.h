@@ -149,6 +149,15 @@ public:
         std::vector<Ptr<AST::Package>>& packages);
 
     /**
+     * Re-index source-package imports after macro expansion for a multi-package source group (cyclic
+     * subpackages compiled together). BuildIndex runs before MACRO_EXPAND, so each source package's
+     * member declMap skipped its macro-annotated (MACRO_EXPAND_DECL) decls, making them invisible to a
+     * sibling's wildcard import. Once macros are expanded, rebuild the source packages' member maps and
+     * the source-import index from them. No-op for a single source package (no siblings to see).
+     */
+    void ReindexSourcePackagesAfterMacroExpand(const std::vector<Ptr<AST::Package>>& srcPackages);
+
+    /**
      * Load package from package name and cjo path.
      * Note: The function is used by lsp.
      */

@@ -1590,6 +1590,31 @@ void ImportManager::ClearCachesForRebuild()
     directMacroDeps.clear();
 }
 
+void ImportManager::ReindexSourcePackagesAfterMacroExpand(const std::vector<Ptr<Package>>& srcPackages)
+{
+    // Only a multi-package source group (cyclic subpackages compiled together) can have a sibling source
+    // package whose macro-generated decls must become visible to another member. A single source package
+    // imports only finished .cjo dependencies, whose decls are already macro-expanded, so nothing to do.
+    if (srcPackages.size() <= 1) {
+        return;
+    }
+    // 1. Rebuild each source package's member declMap now that its macros are expanded (BuildIndex built
+    //    these before MACRO_EXPAND and skipped the then-unexpanded MACRO_EXPAND_DECL nodes).
+    for (auto pkg : srcPackages) {
+        cjoManager->RebuildSourcePackageDeclMap(pkg->fullPackageName);
+    }
+    // 2. Discard the source-import index built from the stale declMaps and rebuild it from the refreshed
+    //    ones. The .cjo dependency declMaps are unchanged, so re-reading them is idempotent; this
+    //    reproduces exactly what BuildIndex's AddImportedDeclsForSourcePackage loop would now produce.
+    importedDeclsMap.clear();
+    fileImportedDeclsMap.clear();
+    declsImportedByNodeMap.clear();
+    declToTypeAlias.clear();
+    for (auto pkg : srcPackages) {
+        AddImportedDeclsForSourcePackage(*pkg);
+    }
+}
+
 bool ImportManager::AnalyzeDepStdPkgsOfBC(const std::string& fullPackageName)
 {
     auto existingPkg = cjoManager->GetPackage(fullPackageName);

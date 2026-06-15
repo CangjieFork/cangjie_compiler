@@ -596,6 +596,20 @@ void CjoManager::AddPackageDeclMap(const std::string& fullPackageName, const std
     }
 }
 
+void CjoManager::RebuildSourcePackageDeclMap(const std::string& fullPackageName)
+{
+    auto info = impl->GetPackageInfo(fullPackageName);
+    if (info == nullptr) {
+        return;
+    }
+    // Drop the stale member maps (built before macro expansion, missing the macro-generated decls) and
+    // clear the visited flag so AddPackageDeclMap re-collects from the now macro-expanded file->decls.
+    info->declMap.clear();
+    info->implicitDeclMap.clear();
+    impl->RemoveVisitedPackage(fullPackageName);
+    AddPackageDeclMap(fullPackageName);
+}
+
 std::string CjoManager::GetPackageCjoPath(const std::string& fullPackageName) const
 {
     return FindCjoPath(*impl, fullPackageName, fullPackageName, GetSearchPath());

@@ -123,6 +123,10 @@ public:
     {
         visitedPkgs.emplace(fullPackageName);
     }
+    void RemoveVisitedPackage(const std::string& fullPackageName)
+    {
+        visitedPkgs.erase(fullPackageName);
+    }
     void AddImportsToMap(const AST::ImportSpec& import, const std::string& importedPackage,
         std::map<std::string, AST::OrderedDeclSet>& declMap) const;
     void ClearCjoCache()

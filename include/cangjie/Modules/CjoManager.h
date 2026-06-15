@@ -53,6 +53,14 @@ public:
      * @param importedPackage the package which imports 'fullPackageName'. Empty for source package.
      */
     void AddPackageDeclMap(const std::string& fullPackageName, const std::string& importedPackage = "");
+    /**
+     * Discard and rebuild the member declMap of a source package after macro expansion. The declMap
+     * built during BuildIndex (before MACRO_EXPAND) skips MACRO_EXPAND_DECL nodes, so a source package's
+     * macro-annotated decls are absent. For a multi-package source group (cyclic subpackages) the sibling
+     * members must be visible to each other, so the declMap has to be rebuilt once the macro-expanded
+     * decls are in place. Single-package compilation never needs this (it imports only finished .cjo).
+     */
+    void RebuildSourcePackageDeclMap(const std::string& fullPackageName);
     /** For loading cached types during incremental compilation. */
     std::unordered_set<std::string> LoadCachedPackage(const AST::Package& pkg,
         const std::string& cjoPath, const std::map<std::string, Ptr<AST::Decl>>& mangledName2DeclMap) const;
