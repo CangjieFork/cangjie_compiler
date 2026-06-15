@@ -20,6 +20,7 @@
 #include "cangjie/CodeGen/EmitPackageIR.h"
 #include "cangjie/Driver/StdlibMap.h"
 #include "cangjie/Driver/TempFileManager.h"
+#include "cangjie/Mangle/BaseMangler.h"
 #include "cangjie/Modules/PackageManager.h"
 #include "cangjie/Utils/FileUtil.h"
 #include "cangjie/Utils/ProfileRecorder.h"
@@ -167,6 +168,27 @@ std::string DefaultCIImpl::GenerateBCFilePathAndUpdateToInvocation(
 
 bool DefaultCIImpl::SaveCjo(const std::vector<Ptr<Package>>& pkgs)
 {
+    // When a group of mutually-dependent source packages is compiled together (cyclic subpackage group),
+    // each package's '.cjo' is serialized in turn. A sibling package's decl referenced from another member
+    // is written as an EXTERNAL reference keyed by its 'exportId'. However 'exportId' is only assigned when
+    // a package is itself the export target (inside 'ASTWriter::ExportAST' -> 'MangleExportId'). So when
+    // serializing member 'b', sibling 'a's decls still carry an empty 'exportId' and would be written using
+    // their raw identifier, which an external consumer cannot resolve (the consumer keys its decl map by the
+    // mangled 'exportId'), leading to an unresolved member and a crash during CHIR translation.
+    //
+    // Pre-mangle the 'exportId' of every member package up-front so cross-member external references use the
+    // same mangled id the consumer expects. Each package's later 'ExportAST' re-mangles only its own decls
+    // (idempotent), so sibling ids set here are preserved. Single-package compiles are unaffected: there are
+    // no siblings to reference, so this loop is a no-op with respect to cross-package references.
+    if (pkgs.size() > 1) {
+        for (auto& pkg : pkgs) {
+            if (pkg == nullptr || pkg->IsEmpty()) {
+                continue;
+            }
+            BaseMangler mangler;
+            mangler.MangleExportId(*pkg);
+        }
+    }
     bool ret = true;
     for (auto& pkg : pkgs) {
         ret = ret && SaveCjo(*pkg);
