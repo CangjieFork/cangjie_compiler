@@ -689,8 +689,15 @@ bool CompilerInstance::PerformGenericInstantiation()
         gim->ResetGenericInstantiationStage();
         Utils::ProfileRecorder::Stop("Generic Instantiation", "ResetGenericInstantiationStage");
         Utils::ProfileRecorder::Start("Generic Instantiation", "GenericInstantiatePackage");
+        // A group of mutually-dependent (cyclic) source packages shares the cross-instantiation static
+        // maps (ins2generic/generic2ins): members reference each other's instantiated decls. Reset those
+        // maps only before the first member so they accumulate across the whole group; resetting per
+        // member would drop earlier siblings' instantiations. For the common single-package case this is
+        // exactly the previous behaviour (one member, reset once).
+        bool resetGlobalState = true;
         for (auto& srcPkg : srcPkgs) {
-            gim->GenericInstantiatePackage(*srcPkg);
+            gim->GenericInstantiatePackage(*srcPkg, resetGlobalState);
+            resetGlobalState = false;
             // Avoid enter post-desugar process if error occurs in generic instantiation.
             if (diag.GetErrorCount() != 0) {
                 return false;
@@ -1290,6 +1297,14 @@ const CHIR::ConstAnalysisWrapper& CompilerInstance::GetConstAnalysisWrapper() co
 
 std::vector<CHIR::Package*> CompilerInstance::GetAllCHIRPackages() const
 {
+    // chirData is absent on the incremental codegen path (IncrementalCompilerInstance::PerformCodeGen
+    // drives per-package codegen without populating chirData). The only caller there asks "is this a
+    // multi-package cyclic group?" via .size(); with no chirData there is no group, so return empty
+    // instead of dereferencing a null pointer (a regression introduced when the cyclic-group codegen
+    // loop added this query to EmitLLVMSimilarBytecode's incremental branch).
+    if (chirData == nullptr) {
+        return {};
+    }
     return chirData->GetAllCHIRPackages();
 }
 

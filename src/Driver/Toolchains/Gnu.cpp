@@ -445,13 +445,26 @@ void Gnu::PartialLinkOnePackage(const std::string& pkgName, const std::vector<Te
     std::string dirPath = FileUtil::GetDirPath(modules[0].filePath);
     std::string outputFile = FileUtil::JoinPath(dirPath, pkgName + ".o");
 
-    auto tool = std::make_unique<Tool>(ldPath, ToolType::BACKEND, driverOptions.environment.allVariables);
-    tool->AppendArg("-o", outputFile);
-    tool->AppendArg("-r");
-    for (const auto& m : modules) {
-        tool->AppendArg(m.filePath);
+    // A package that produced a single LLVM module already has its object named "<pkgName>.o" with no
+    // "<n>-" index prefix (see DefaultCIImpl::GenerateFileName, called with an empty idx for the
+    // single-module case). Then outputFile equals the sole input module, so emitting
+    // `ld -r -o <pkgName>.o <pkgName>.o` opens the output for writing (truncating it) before reading it
+    // back as input; on platforms whose lld opens the output first this destroys the object and the
+    // relink fails with "<pkgName>.o: unknown file type". This only surfaced once a cyclic group of
+    // several single-module packages pushed the total object count above one (ProcessGeneration's
+    // partial-link threshold), so each package now reaches PartialLinkOnePackage with a single,
+    // already-final object. Skip the degenerate self-relink; the object is already the package object
+    // and the symbol-localization objcopy below still applies to it in place. Emit the `ld -r` combine
+    // step only when it actually merges distinct inputs.
+    if (!(modules.size() == 1 && modules[0].filePath == outputFile)) {
+        auto tool = std::make_unique<Tool>(ldPath, ToolType::BACKEND, driverOptions.environment.allVariables);
+        tool->AppendArg("-o", outputFile);
+        tool->AppendArg("-r");
+        for (const auto& m : modules) {
+            tool->AppendArg(m.filePath);
+        }
+        backendCmds.emplace_back(MakeSingleToolBatch({std::move(tool)}));
     }
-    backendCmds.emplace_back(MakeSingleToolBatch({std::move(tool)}));
 
     auto outputDir = FileUtil::GetAbsPath(FileUtil::GetDirPath(outputFile));
     CJC_ASSERT(outputDir.has_value());

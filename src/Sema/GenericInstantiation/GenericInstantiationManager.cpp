@@ -25,9 +25,9 @@ GenericInstantiationManager::~GenericInstantiationManager()
 {
 }
 
-void GenericInstantiationManager::GenericInstantiatePackage(AST::Package& pkg) const
+void GenericInstantiationManager::GenericInstantiatePackage(AST::Package& pkg, bool resetGlobalState) const
 {
-    impl->GenericInstantiatePackage(pkg);
+    impl->GenericInstantiatePackage(pkg, resetGlobalState);
 }
 
 Ptr<AST::Decl> GenericInstantiationManager::GetInstantiatedDeclWithGenericInfo(

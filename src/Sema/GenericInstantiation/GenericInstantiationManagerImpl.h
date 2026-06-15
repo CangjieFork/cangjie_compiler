@@ -77,7 +77,7 @@ public:
         testManager = nullptr;
     }
     /** Generic instantiation package entrance. */
-    void GenericInstantiatePackage(AST::Package& pkg);
+    void GenericInstantiatePackage(AST::Package& pkg, bool resetGlobalState = true);
     /**
      * Get the instantiated decl corresponding to the genericInfo:
      * @param genericInfo [in] generic decl instantiation parameters.

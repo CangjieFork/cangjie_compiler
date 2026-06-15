@@ -276,7 +276,7 @@ Ptr<Decl> GIM::GenericInstantiationManagerImpl::GetMemberByOffset(const Decl& de
     return implMemberIt->get();
 }
 
-void GIM::GenericInstantiationManagerImpl::GenericInstantiatePackage(Package& pkg)
+void GIM::GenericInstantiationManagerImpl::GenericInstantiatePackage(Package& pkg, bool resetGlobalState)
 {
     this->curPkg = &pkg;
     Utils::ProfileRecorder::Start("GenericInstantiatePackage", "RecordExtend");
@@ -291,7 +291,13 @@ void GIM::GenericInstantiationManagerImpl::GenericInstantiatePackage(Package& pk
         InstantiateForIncrementalPackage();
     } else {
         // When `GenericInstantiatePackage` is invoked for multiple times, ensure that global data is clean.
-        PartialInstantiation::ResetGlobalMap();
+        // For the 2nd and later members of a mutually-dependent (cyclic) source group compiled together,
+        // resetGlobalState is false: those members reference each other's instantiated decls through the
+        // shared ins2generic/generic2ins maps, so wiping the maps between members would drop a sibling's
+        // instantiations and crash PartialInstantiation::GetGeneralDecl with a missing key.
+        if (resetGlobalState) {
+            PartialInstantiation::ResetGlobalMap();
+        }
         // Only walk non-generic or instantiated decl's to perform instantiation.
         Walker(curPkg, instantiationWalkerID, instantiator, contextReset).Walk();
     }

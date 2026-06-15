@@ -35,8 +35,13 @@ class GenericInstantiationManager {
 public:
     explicit GenericInstantiationManager(CompilerInstance& ci);
     ~GenericInstantiationManager();
-    /** Generic instantiation package entrance. */
-    void GenericInstantiatePackage(AST::Package& pkg) const;
+    /** Generic instantiation package entrance.
+     * resetGlobalState clears the cross-instantiation static maps (ins2generic/generic2ins) before
+     * instantiating. It must be true for a standalone package, but false for the 2nd and later packages
+     * of a mutually-dependent (cyclic) source group compiled together: those packages reference each
+     * other's instantiated decls, so the maps must accumulate across the whole group rather than be
+     * wiped between members. */
+    void GenericInstantiatePackage(AST::Package& pkg, bool resetGlobalState = true) const;
     /**
      * Get the instantiated decl corresponding to the genericInfo:
      * @param genericInfo [in] generic decl instantiation parameters.

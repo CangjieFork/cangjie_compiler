@@ -287,11 +287,20 @@ void TypeChecker::TypeCheckerImpl::CheckInheritance(Package& pkg)
     checker.Check();
 
     auto movedMembers = checker.MoveStructInheritedMembers();
-    // Ensure javaCache is empty before moving in (it should be if called at the correct point in pipeline).
-    CJC_ASSERT_WITH_MSG(this->structMemberMap.empty(),
-        "structMemberMap should be empty when moving inherited members");
-
-    this->structMemberMap = std::move(movedMembers);
+    // In single-package compilation structMemberMap is empty here (the previous package's entries were
+    // consumed by its desugar before the next CheckInheritance), so move-assign preserving the original
+    // behaviour exactly. When a group of mutually-dependent source packages is type-checked together,
+    // PostTypeCheck runs CheckInheritance for EVERY member package before any package is desugared, so the
+    // map legitimately already holds earlier members. structMemberMap is keyed by InheritableDecl and
+    // distinct packages contribute disjoint decls, so merge the new members in rather than asserting the
+    // map is empty (which would fail for the second and later packages of the group).
+    if (this->structMemberMap.empty()) {
+        this->structMemberMap = std::move(movedMembers);
+    } else {
+        for (auto& entry : movedMembers) {
+            this->structMemberMap.insert(std::move(entry));
+        }
+    }
 }
 
 /**
