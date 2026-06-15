@@ -53,18 +53,22 @@ else()
 endif()
 
 set(LINK_FLAGS "-Wl,--stack,16777216")
-set(STRIP_FLAG "-s")
+# Keep DWARF symbols in the release Windows cjc (do not strip). CMAKE_BUILD_TYPE stays Release so the
+# MinGW relwithdebinfo-only paths (WIN_DEBUG_USE_STATIC_LIB in src/CMakeLists.txt, -fdebug-types-section
+# on pcre2) are NOT taken; only -g below is added. This makes the CI SDK debuggable (matching the intent
+# of building with debug info) at the cost of a larger binary.
+set(STRIP_FLAG "")
 
 set(C_FLAGS "${WARNINGS_SETTINGS} ${C_OTHER_FLAGS} ${OTHER_FLAGS}")
 set(CPP_FLAGS "${WARNINGS_SETTINGS} ${CXX_OTHER_FLAGS} ${OTHER_FLAGS}")
 
 set(CMAKE_C_FLAGS "${C_FLAGS}")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g")
-set(CMAKE_C_FLAGS_RELEASE "-D_FORTIFY_SOURCE=2 -O2")
+set(CMAKE_C_FLAGS_RELEASE "-D_FORTIFY_SOURCE=2 -O2 -g")
 set(CMAKE_C_FLAGS_DEBUG "-O0 -g")
 set(CMAKE_CXX_FLAGS "${CPP_FLAGS}")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g")
-set(CMAKE_CXX_FLAGS_RELEASE "-D_FORTIFY_SOURCE=2 -O2")
+set(CMAKE_CXX_FLAGS_RELEASE "-D_FORTIFY_SOURCE=2 -O2 -g")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
 set(CMAKE_ASM_FLAGS "${CPP_FLAGS} -x assembler-with-cpp")
 set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-insert-timestamp")
