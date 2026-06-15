@@ -1328,7 +1328,21 @@ Type* GetInstParentCustomTyOfCallee(
          * 1. def equals def, maybe `def` is generic, `type` is instantiated
          * 2. type equals type, maybe `def` is instantiated
          */
-        return type.GetCustomTypeDef() == &def || &type == def.GetType();
+        if (type.GetCustomTypeDef() == &def || &type == def.GetType()) {
+            return true;
+        }
+        /**
+         * 3. In a cyclic subpackage group, a sibling class referenced across members can exist as two
+         *    distinct CustomTypeDef instances: the source def in the defining member and an imported
+         *    view in the referencing member. They denote the same class, so neither pointer comparison
+         *    above matches even though the callee's parent (a source def) is the receiver's class. The
+         *    mangled identifier is package-qualified and unique per class, so fall back to comparing it;
+         *    this lets the caller (GetInstParentCustomTyOfCallee) return the correctly instantiated
+         *    receiver type instead of an empty match set (which yields a null outer type and crashes
+         *    codegen's CreateOuterTypeInfo).
+         */
+        auto typeDef = type.GetCustomTypeDef();
+        return typeDef != nullptr && typeDef->GetIdentifier() == def.GetIdentifier();
     };
     if (auto customType = DynamicCast<CustomType*>(derefThisType); customType &&
         typeAndDefIsEquivalent(*customType, *calleeParentDef)) {
