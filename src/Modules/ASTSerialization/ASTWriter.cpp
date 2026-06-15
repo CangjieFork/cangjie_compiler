@@ -558,6 +558,7 @@ void ASTWriter::ASTWriterImpl::SaveOptions(bool debug, GlobalOptions::Optimizati
  */
 void ASTWriter::ASTWriterImpl::PreSaveFullExportDecls(Package& package)
 {
+    curExportPackageName = package.fullPackageName;
     for (auto &file : package.files) {
         if (file->package && file->package->hasCommon) {
             serializingCommon = true;
@@ -721,6 +722,7 @@ void ASTWriter::ASTWriterImpl::ExportAST(const PackageDecl& package)
 {
     exportFuncBody = false; // Content can only be saved during 'PreSaveFullExportDecls' step.
     CJC_NULLPTR_CHECK(package.srcPackage);
+    curExportPackageName = package.srcPackage->fullPackageName;
 
     // 1. Mangle exportId.
     MangleExportId(*package.srcPackage);
@@ -841,8 +843,19 @@ TFullIdOffset ASTWriter::ASTWriterImpl::GetFullDeclIndex(Ptr<const Decl> decl)
     }
     if (decl->astKind == ASTKind::PACKAGE_DECL) {
         return PackageFormat::CreateFullId(builder, PKG_REFERENCE_INDEX, builder.CreateString(decl->fullPackageName));
-    } else if (decl->TestAttr(Attribute::IMPORTED)) {
-        // Get full decl index from imported map.
+    } else if (decl->TestAttr(Attribute::IMPORTED) ||
+        (!curExportPackageName.empty() && !decl->fullPackageName.empty() &&
+         decl->fullPackageName != curExportPackageName)) {
+        // The decl belongs to another package: either a normally-imported package, or — when a group of
+        // mutually-dependent source packages is compiled together — a sibling source package (which does
+        // not carry Attribute::IMPORTED). Either way it must be serialized as an external reference, not
+        // inlined into this package's .cjo (inlining a sibling would recurse cyclically and corrupt the
+        // flatbuffer). Get full decl index from the imported map.
+        // NOTE: local/synthesized decls (e.g. desugared VarDecls) carry an empty fullPackageName; the
+        // non-empty guard keeps them inlined into the current package — without it a normal single-package
+        // compile would wrongly serialize them as EXTERNAL references with an empty package name. A sibling
+        // source package decl always has a non-empty fullPackageName differing from the exporter, so it
+        // still routes external as intended.
         auto pkgIndex = static_cast<PackageIndex>(SavePackageName(decl->fullPackageName));
         importedDeclPkgNames.emplace(decl->fullPackageName);
         // NOTE: FullId using 'int32' to distinguish with current package and invalid references.

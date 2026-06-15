@@ -882,13 +882,29 @@ bool GlobalOptions::ProcessInputs(const std::vector<std::string>& inputs)
         }
     });
     // Check inputs.
+    // Allow multiple `-p` package directories so that a group of mutually-dependent
+    // (cyclic) packages within the same module can be compiled together in one
+    // invocation. This unlocks the existing whole-module ParseModule pipeline, in which
+    // all source packages are parsed and type-checked together (Sema already supports
+    // multi-package), and each package still emits its own .cjo/.o.
     if (compilePackage && packagePaths.empty()) {
         (void)diag.DiagnoseRefactor(DiagKindRefactor::driver_require_package_directory, DEFAULT_POSITION);
         return false;
     }
+    // Reject duplicate `-p` package directories: passing the same directory twice would compile the
+    // same package twice and produce duplicate/colliding symbols at link time. Full module-membership
+    // validation is the build tool's responsibility; here we only guard against the obvious duplicate.
+    // Canonicalize paths first so that e.g. "src/a" and "src/./a" are recognised as the same directory.
     if (compilePackage && packagePaths.size() > 1) {
-        (void)diag.DiagnoseRefactor(DiagKindRefactor::driver_require_one_package_directory, DEFAULT_POSITION);
-        return false;
+        std::unordered_set<std::string> seenPaths;
+        for (auto& path : packagePaths) {
+            auto absPath = FileUtil::GetAbsPath(path);
+            std::string canonical = absPath.has_value() ? absPath.value() : FileUtil::NormalizePath(path);
+            if (!seenPaths.emplace(canonical).second) {
+                Errorf("duplicate package path '%s' specified with '-p'\n", path.c_str());
+                return false;
+            }
+        }
     }
     return ret;
 }
@@ -1292,6 +1308,17 @@ static std::string HashString(const std::string& str)
 std::string GlobalOptions::GetHashedObjFileName(const std::string& objFileName) const
 {
     return FileUtil::JoinPath(compilationCachedDir, HashString(compilationCachedFileName + objFileName));
+}
+
+std::string GlobalOptions::GetHashedObjFileNameForPackage(
+    const std::string& fullPackageName, const std::string& objFileName) const
+{
+    // Derive the cache dir/hash from the given package name rather than the (mutable, possibly stale)
+    // compilationCachedFileName/compilationCachedDir members. For compilePackage, GenerateNamesOfCachedDirAndFile
+    // returns (.cached dir, HashString(fullPackageName)), matching what GetHashedObjFileName would compute for
+    // the single-package case.
+    auto [dir, file] = GenerateNamesOfCachedDirAndFile(fullPackageName);
+    return FileUtil::JoinPath(dir, HashString(file + objFileName));
 }
 
 std::pair<std::string, std::string> GlobalOptions::GenerateNamesOfCachedDirAndFile(

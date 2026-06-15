@@ -256,7 +256,15 @@ void EmitMain(CGModule& cgMod)
 
     Utils::ProfileRecorder recorder("EmitIR", "EmitMain");
     auto chirUserMain = cgMod.GetCGContext().GetCGPkgContext().FindCHIRGlobalValue(USER_MAIN_MANGLED_NAME);
-    CJC_ASSERT(chirUserMain && "Cannt find userMain.");
+    // Only the package that actually defines the user `main` emits the executable entry (`main` and
+    // `cj_entry$`). When a group of mutually-dependent source packages is compiled together into one
+    // executable, sibling packages are visible to each other, so a library package may *find* the user
+    // main as an IMPORTED declaration in its own CHIR even though it does not define it. Emitting the
+    // entry for those packages causes "multiple definition of `main`/`cj_entry$`" at link time. Skip
+    // when no user main is visible, or when the visible one is imported from another package.
+    if (chirUserMain == nullptr || chirUserMain->TestAttr(CHIR::Attribute::IMPORTED)) {
+        return;
+    }
     auto userMainFunc = cgMod.GetOrInsertCGFunction(chirUserMain);
 
     auto mainFunction = CreateMainFunc(cgMod);

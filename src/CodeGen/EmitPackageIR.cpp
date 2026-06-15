@@ -583,8 +583,13 @@ void PackageGeneratorImpl::EmitIR()
     GenSubCHIRPackages();
 
     auto localizedSymbols = cgPkgCtx.GetLocalizedSymbols();
-    const_cast<GlobalOptions&>(cgPkgCtx.GetGlobalOptions()).symbolsNeedLocalized =
-        std::vector<std::string>(localizedSymbols.begin(), localizedSymbols.end());
+    auto localizedSymbolsVec = std::vector<std::string>(localizedSymbols.begin(), localizedSymbols.end());
+    const_cast<GlobalOptions&>(cgPkgCtx.GetGlobalOptions()).symbolsNeedLocalized = localizedSymbolsVec;
+    // Also record this package's localized symbols keyed by its full package name. The flat vector above is
+    // overwritten per package, so in a multi-package group only the last package's symbols survive; the map
+    // lets the driver write the correct `<pkgName>.__symbols` for every package. (See Option.h.)
+    const_cast<GlobalOptions&>(cgPkgCtx.GetGlobalOptions())
+        .symbolsNeedLocalizedPerPkg[cgPkgCtx.GetCHIRPackage().GetName()] = std::move(localizedSymbolsVec);
 
     cgPkgCtx.Clear();
 }
@@ -605,7 +610,19 @@ std::vector<std::unique_ptr<llvm::Module>> GenPackageModules(
         temp.EmitIR();
         llvmModules = temp.ReleaseLLVMModules();
     }
-    compilerInstance.FreeCHIRData();
+    // In single-package compilation the CHIR data is no longer needed after this package's codegen
+    // and is freed here to lower peak memory. When a group of mutually-dependent source packages is
+    // compiled together within one module, the CHIR of the packages not yet emitted is still needed
+    // by later iterations of the codegen loop (DefaultCIImpl::PerformCodeGen), so defer freeing to
+    // the end of that loop. Freeing here would destroy every CHIR package's Package/Type objects and
+    // leave the loop reading freed memory (use-after-free).
+    // NOTE: the loop-vs-single decision in DefaultCIImpl::PerformCodeGen keys off GetAllCHIRPackages()
+    // (the CHIR packages), so this deferral predicate MUST use the SAME notion. Using a different vector
+    // (e.g. GetSourcePackages()) could disagree and either free CHIR mid-loop (use-after-free) or never
+    // free it (leak).
+    if (compilerInstance.GetAllCHIRPackages().size() <= 1) {
+        compilerInstance.FreeCHIRData();
+    }
     Utils::FreeIdleMemoryToOS();
     return llvmModules;
 }

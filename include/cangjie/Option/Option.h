@@ -16,6 +16,7 @@
 #include <climits>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -395,6 +396,19 @@ public:
      * @return std::string The new filename based on the hash value of the object file name.
      */
     std::string GetHashedObjFileName(const std::string& objFileName) const;
+
+    /**
+     * @brief Gets the hashed object filename for a SPECIFIC package, independent of the (mutable, possibly
+     * stale) compilationCachedFileName member. Required by the multi-package codegen path, where each package's
+     * cached object must land in a hash slot derived from that package's own name. For a single-package build
+     * the result is identical to GetHashedObjFileName.
+     *
+     * @param fullPackageName The full package name whose cache directory/hash to use.
+     * @param objFileName The object file name to hash.
+     * @return std::string The hashed cache path for the given package's object file.
+     */
+    std::string GetHashedObjFileNameForPackage(
+        const std::string& fullPackageName, const std::string& objFileName) const;
 
     /**
      * @brief Updates the cached directory name to reflect the full package name.
@@ -892,6 +906,14 @@ public:
     bool aggressiveParallelCompileWithoutArg = false;
     std::vector<std::string> bitcodeFilesName; /** < the name of packageMoudle.bc. */
     std::vector<std::string> symbolsNeedLocalized; /** < Symbols that need to be localized in the compiled binary. */
+    /**
+     * Per-package symbols-to-localize, keyed by full package name. The flat `symbolsNeedLocalized` above is
+     * overwritten once per package during codegen, so in a multi-package group it would end up holding only
+     * the LAST package's symbols. This map records each package's own symbol set so the driver can write the
+     * correct `<pkgName>.__symbols` for every package. Single-package builds may leave this empty and fall
+     * back to the flat vector.
+     */
+    std::map<std::string, std::vector<std::string>> symbolsNeedLocalizedPerPkg;
 
     /**
      * @brief Determine if the output mode is executable.

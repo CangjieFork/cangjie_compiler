@@ -954,8 +954,8 @@ bool CompilerInstance::GenerateCHIRForPkg(AST::Package& pkg)
     chirInfo.optEffectMap = convertor.GetOptEffectMap();
 #ifdef CANGJIE_CODEGEN_CJNATIVE_BACKEND
     chirData->AppendNewPackage(chirPkg);
-    chirData->SetImplicitFuncs(convertor.GetImplicitFuncs());
-    chirData->SetConstVarInitFuncs(convertor.GetConstVarInitFuncs());
+    chirData->SetImplicitFuncs(chirPkg, convertor.GetImplicitFuncs());
+    chirData->SetConstVarInitFuncs(chirPkg, convertor.GetConstVarInitFuncs());
     chirInfo.curVirtFuncWrapDep = convertor.GetCurVirtualFuncWrapperDepForIncr();
     chirInfo.delVirtFuncWrapForIncr = convertor.GetDeleteVirtualFuncWrapperForIncr();
     chirInfo.ccOutFuncsRawMangle = convertor.GetCCOutFuncsRawMangle();
@@ -1324,14 +1324,24 @@ std::vector<CHIR::Package*> CHIRData::GetAllCHIRPackages() const
 
 CHIR::Package* CHIRData::GetCurrentCHIRPackage() const
 {
+    if (curCodegenPkg != nullptr) {
+        return curCodegenPkg;
+    }
     if (chirPkgs.empty()) {
         return nullptr;
     }
     return chirPkgs[0];
 }
 
-void CHIRData::SetImplicitFuncs(const std::unordered_map<std::string, CHIR::Function*>& funcs)
+void CHIRData::SetCurrentCHIRPackage(CHIR::Package* package)
 {
+    curCodegenPkg = package;
+}
+
+void CHIRData::SetImplicitFuncs(CHIR::Package* pkg, const std::unordered_map<std::string, CHIR::Function*>& funcs)
+{
+    implicitFuncsPerPkg[pkg] = funcs;
+    // Keep the active set in sync for the common single-package case (no codegen-loop activation).
     implicitFuncs = funcs;
 }
 
@@ -1340,9 +1350,20 @@ std::unordered_map<std::string, CHIR::Function*> CHIRData::GetImplicitFuncs() co
     return implicitFuncs;
 }
 
-void CHIRData::SetConstVarInitFuncs(const std::vector<CHIR::Function*>& funcs)
+void CHIRData::SetConstVarInitFuncs(CHIR::Package* pkg, const std::vector<CHIR::Function*>& funcs)
 {
+    constVarInitFuncsPerPkg[pkg] = funcs;
     initFuncsForConstVar = funcs;
+}
+
+void CHIRData::ActivateCodegenFuncsForPackage(CHIR::Package* pkg)
+{
+    if (auto it = implicitFuncsPerPkg.find(pkg); it != implicitFuncsPerPkg.end()) {
+        implicitFuncs = it->second;
+    }
+    if (auto it = constVarInitFuncsPerPkg.find(pkg); it != constVarInitFuncsPerPkg.end()) {
+        initFuncsForConstVar = it->second;
+    }
 }
 
 std::vector<CHIR::Function*> CHIRData::GetConstVarInitFuncs() const
@@ -1352,7 +1373,13 @@ std::vector<CHIR::Function*> CHIRData::GetConstVarInitFuncs() const
 
 CHIR::ConstAnalysisWrapper& CHIRData::GetConstAnalysisResultRef()
 {
-    CJC_ASSERT(constAnalysisWrapper != nullptr);
+    // Each package's CHIR RulesChecking releases the const-analysis wrapper at its end
+    // (FreeConstAnalysisWrapper). When a group of source packages is compiled together, the
+    // next package needs a fresh wrapper, so re-create it lazily here. For a single package
+    // the wrapper created in InitData is still alive and this is a no-op.
+    if (constAnalysisWrapper == nullptr) {
+        constAnalysisWrapper = std::make_unique<CHIR::ConstAnalysisWrapper>(builder);
+    }
     return *constAnalysisWrapper;
 }
 

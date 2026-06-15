@@ -88,6 +88,12 @@ private:
     bool serializingCommon = false;
     flatbuffers::FlatBufferBuilder builder{INITIAL_FILE_SIZE};
     std::string packageDepInfo;
+    // Full name of the package currently being exported. Used to decide whether a referenced decl is
+    // local (serialized inline) or belongs to another package (serialized as an external reference).
+    // When a group of mutually-dependent source packages is compiled together, sibling source-package
+    // decls do NOT carry Attribute::IMPORTED, so the package-name comparison is what keeps a .cjo from
+    // inlining (and cyclically recursing into) another package's declarations.
+    std::string curExportPackageName;
     const CjoManager& cjoManager;
     TypeManager& typeManager;
     /** All serialized node index in order. */

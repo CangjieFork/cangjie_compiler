@@ -293,7 +293,18 @@ bool DefaultCIImpl::EmitLLVMSimilarBytecode(bool enableIncrement)
 
     if (ci.invocation.globalOptions.enIncrementalCompilation) {
         auto fileName = GenerateFileName(fullPackageName, "");
-        ci.cachedInfo.bitcodeFilesName = std::vector<std::string>{fileName};
+        // This function runs once per package. In single-package compilation overwrite (preserving the
+        // original behaviour exactly). When a group of mutually-dependent source packages is compiled
+        // together within one module (multi-package codegen loop in DefaultCIImpl::PerformCodeGen),
+        // accumulate so every group member's bitcode name is recorded; a plain assignment would keep only
+        // the last package's name and the incremental object-freshness checks would skip the others.
+        // bitcodeFilesName is cleared once before the loop (see DefaultCIImpl::PerformCodeGen) so emplace_back
+        // accumulates cleanly across the group.
+        if (ci.GetAllCHIRPackages().size() > 1) {
+            ci.cachedInfo.bitcodeFilesName.emplace_back(fileName);
+        } else {
+            ci.cachedInfo.bitcodeFilesName = std::vector<std::string>{fileName};
+        }
     }
     return true;
 }
@@ -310,7 +321,38 @@ bool DefaultCIImpl::PerformCodeGen()
     Utils::ProfileRecorder recorder("Main Stage", "CodeGen");
     // Before CodeGen, the dependency relationship of a package contains only some packages.
     // So this function rearranges the dependencies of all packages.
-    return CodegenOnePackage(false);
+    auto chirPkgs = ci.GetAllCHIRPackages();
+    if (chirPkgs.size() <= 1) {
+        return CodegenOnePackage(false);
+    }
+    // A group of (possibly cyclic) source packages was compiled together within one module.
+    // Emit each package separately so every package produces its own bitcode/object; cross
+    // package references between sibling source packages are external symbols resolved at link
+    // time. The per-package init once-flag (see GlobalVarInitializer::GeneratePackageInitBase)
+    // makes mutually-recursive package initialization safe regardless of emission order.
+    bool ret = true;
+    // EmitLLVMSimilarBytecode accumulates each package's bitcode name into bitcodeFilesName for the
+    // multi-package group (see Fix in that function). Clear once here before the per-package loop so the
+    // accumulation starts from a clean slate and carries no stale entries.
+    if (ci.invocation.globalOptions.enIncrementalCompilation) {
+        ci.cachedInfo.bitcodeFilesName.clear();
+    }
+    auto* savedCurPackage = ci.chirData->GetCHIRContext().GetCurPackage();
+    for (auto* pkg : chirPkgs) {
+        ci.chirData->SetCurrentCHIRPackage(pkg);
+        ci.chirData->GetCHIRContext().SetCurPackage(pkg);
+        ci.chirData->ActivateCodegenFuncsForPackage(pkg);
+        if (!CodegenOnePackage(false)) {
+            ret = false;
+            break;
+        }
+    }
+    ci.chirData->SetCurrentCHIRPackage(nullptr);
+    ci.chirData->GetCHIRContext().SetCurPackage(savedCurPackage);
+    // GenPackageModules defers freeing CHIR data for multi-package builds (the loop above needs the
+    // CHIR of every package alive); now that all packages are emitted, release it once.
+    ci.FreeCHIRData();
+    return ret;
 }
 
 bool DefaultCIImpl::PerformCjoSaving()

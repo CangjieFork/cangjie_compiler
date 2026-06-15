@@ -74,12 +74,24 @@ public:
     void AppendNewPackage(CHIR::Package* package);
     std::vector<CHIR::Package*> GetAllCHIRPackages() const;
     CHIR::Package* GetCurrentCHIRPackage() const;
+    // When compiling a group of (possibly cyclic) source packages together, codegen iterates
+    // over all CHIR packages and sets the one currently being lowered to target code here, so
+    // that GetCurrentCHIRPackage() and the codegen package context agree on which package is
+    // being emitted. nullptr restores the default (first package) behaviour.
+    void SetCurrentCHIRPackage(CHIR::Package* package);
 
-    void SetImplicitFuncs(const std::unordered_map<std::string, CHIR::Function*>& funcs);
+    void SetImplicitFuncs(CHIR::Package* pkg, const std::unordered_map<std::string, CHIR::Function*>& funcs);
     std::unordered_map<std::string, CHIR::Function*> GetImplicitFuncs() const;
 
-    void SetConstVarInitFuncs(const std::vector<CHIR::Function*>& funcs);
+    void SetConstVarInitFuncs(CHIR::Package* pkg, const std::vector<CHIR::Function*>& funcs);
     std::vector<CHIR::Function*> GetConstVarInitFuncs() const;
+
+    // When a group of source packages is compiled together, each package's implicit/const-var-init
+    // functions captured during CHIR generation are kept keyed by package. Codegen reads a single
+    // active set (GetImplicitFuncs), so before emitting each package the loop must activate that
+    // package's functions here; otherwise a later package would overwrite the active set and an
+    // earlier package's codegen would look up a missing symbol (dangling iterator -> heap corruption).
+    void ActivateCodegenFuncsForPackage(CHIR::Package* pkg);
 
     CHIR::ConstAnalysisWrapper& GetConstAnalysisResultRef();
     const CHIR::ConstAnalysisWrapper& GetConstAnalysisResult() const;
@@ -92,10 +104,16 @@ public:
 private:
     CHIR::CHIRContext cctx;
     std::vector<CHIR::Package*> chirPkgs;
-    // used by codegen
+    // Package currently being emitted by codegen; see SetCurrentCHIRPackage. nullptr => chirPkgs[0].
+    CHIR::Package* curCodegenPkg = nullptr;
+    // used by codegen (the currently-active package's implicit functions)
     std::unordered_map<std::string, CHIR::Function*> implicitFuncs;
     // used by interpreter
     std::vector<CHIR::Function*> initFuncsForConstVar;
+    // per-package captures, so the correct set can be re-activated before each package's codegen
+    // when a group of mutually-dependent source packages is emitted in sequence.
+    std::unordered_map<CHIR::Package*, std::unordered_map<std::string, CHIR::Function*>> implicitFuncsPerPkg;
+    std::unordered_map<CHIR::Package*, std::vector<CHIR::Function*>> constVarInitFuncsPerPkg;
     // only for AnalysisWrapper
     CHIR::CHIRBuilder builder{cctx, 0};
     // provide the capability and results of constant analysis, used by cjlint

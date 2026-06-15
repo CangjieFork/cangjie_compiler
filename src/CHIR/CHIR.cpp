@@ -1351,6 +1351,15 @@ void ToCHIR::ClearASTResources()
     if (ci.isCJLint) {
         return;
     }
+    // When a group of mutually-dependent (cyclic) source packages within one module is compiled
+    // together (multiple `-p`), the AST of every source package must stay alive until ALL of them
+    // have been lowered to CHIR: a later package's AST2CHIR pass reads earlier sibling packages'
+    // AST as imported declarations (AST2CHIR::CollectImportedDecls). Releasing AST resources after
+    // each package would leave those sibling references dangling (use-after-free). The whole-group
+    // AST is reclaimed when the CompilerInstance is destroyed.
+    if (ci.GetSourcePackages().size() > 1) {
+        return;
+    }
     Utils::ProfileRecorder recorder("AST to CHIR Translation", "ClearASTResources");
     pkg = nullptr;
     annoFactoryFuncs.clear();

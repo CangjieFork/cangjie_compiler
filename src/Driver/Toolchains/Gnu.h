@@ -42,6 +42,9 @@ protected:
     bool PrepareDependencyPath() override;
     bool ProcessGeneration(std::vector<TempFileInfo>& objFiles) override;
     bool PerformPartialLinkAndContinue(std::vector<TempFileInfo>& objFiles);
+    // Partial-link one package's split modules into a single "<pkgName>.o" and append it to processedObjFiles.
+    void PartialLinkOnePackage(const std::string& pkgName, const std::vector<TempFileInfo>& modules,
+        std::vector<TempFileInfo>& processedObjFiles);
     virtual std::string GenerateGCCLibPath(const std::pair<std::string, std::string>& gccCrtFilePair) const;
 
     virtual void GenerateArchiveTool(const std::vector<TempFileInfo>& objFiles);

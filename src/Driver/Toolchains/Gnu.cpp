@@ -437,38 +437,41 @@ bool Gnu::ProcessGeneration(std::vector<TempFileInfo>& objFiles)
     return PerformPartialLinkAndContinue(objFiles);
 }
 
-bool Gnu::PerformPartialLinkAndContinue(std::vector<TempFileInfo>& objFiles)
+void Gnu::PartialLinkOnePackage(const std::string& pkgName, const std::vector<TempFileInfo>& modules,
+    std::vector<TempFileInfo>& processedObjFiles)
 {
-    auto tool = std::make_unique<Tool>(ldPath, ToolType::BACKEND, driverOptions.environment.allVariables);
-    // Recover the 'outputFile' from 'path/0-xx.o' to 'path/xx.o'
-    std::string outputFile = objFiles[0].filePath;
-    std::string dirPath = FileUtil::GetDirPath(outputFile);
-    std::string fileName = FileUtil::GetFileName(outputFile).substr(2); // 2 is the length of the prefix "0-"
-    outputFile = FileUtil::JoinPath(dirPath, fileName);
+    // Partial-link (ld -r) all of one package's parallel-compiled split modules ("<n>-<pkgName>.o")
+    // into a single "<pkgName>.o".
+    std::string dirPath = FileUtil::GetDirPath(modules[0].filePath);
+    std::string outputFile = FileUtil::JoinPath(dirPath, pkgName + ".o");
 
+    auto tool = std::make_unique<Tool>(ldPath, ToolType::BACKEND, driverOptions.environment.allVariables);
     tool->AppendArg("-o", outputFile);
     tool->AppendArg("-r");
-    std::vector<TempFileInfo> processedObjFiles{};
-    for (auto objName : objFiles) {
-        if (objName.isForeignInput) {
-            processedObjFiles.emplace_back(objName);
-        } else {
-            tool->AppendArg(objName.filePath);
-        }
+    for (const auto& m : modules) {
+        tool->AppendArg(m.filePath);
     }
     backendCmds.emplace_back(MakeSingleToolBatch({std::move(tool)}));
 
     auto outputDir = FileUtil::GetAbsPath(FileUtil::GetDirPath(outputFile));
     CJC_ASSERT(outputDir.has_value());
-    auto name = FileUtil::JoinPath(outputDir.value(), FileUtil::GetFileNameWithoutExtension(fileName) + ".__symbols");
+    auto name = FileUtil::JoinPath(outputDir.value(), pkgName + ".__symbols");
+    // In a multi-package group every package must localize its OWN symbols. Look the symbol set up by this
+    // package's name in the per-package map; fall back to the flat vector (single-package builds, where the
+    // map may be empty). Using the flat vector unconditionally would write the LAST package's symbols into
+    // every package's `.__symbols` and objcopy the wrong localizations.
+    auto perPkgIt = driverOptions.symbolsNeedLocalizedPerPkg.find(pkgName);
+    const std::vector<std::string>& symbolsToLocalize = (perPkgIt != driverOptions.symbolsNeedLocalizedPerPkg.end())
+        ? perPkgIt->second
+        : driverOptions.symbolsNeedLocalized;
     std::ofstream file(FileUtil::NormalizePath(name));
     CJC_ASSERT(file.is_open());
-    for (const auto& str : driverOptions.symbolsNeedLocalized) {
+    for (const auto& str : symbolsToLocalize) {
         file << str << "\n";
     }
     file.close();
 
-    if (!driverOptions.symbolsNeedLocalized.empty()) {
+    if (!symbolsToLocalize.empty()) {
         auto changeSymVis =
             std::make_unique<Tool>(objcopyPath, ToolType::BACKEND, driverOptions.environment.allVariables);
         changeSymVis->AppendArg(outputFile);
@@ -477,20 +480,63 @@ bool Gnu::PerformPartialLinkAndContinue(std::vector<TempFileInfo>& objFiles)
     }
 
     TempFileInfo fileInfo = {FileUtil::GetFileNameWithoutExtension(outputFile), outputFile, outputFile, true, false};
-    processedObjFiles.insert(processedObjFiles.begin(), fileInfo);
-    objFiles = std::move(processedObjFiles);
+    processedObjFiles.emplace_back(fileInfo);
 
-    // If aggressiveParallelCompile is enabled, we combined 0-xx.o, 1-xx.o, etc. to xx.o (aka 'outputFile') by using
-    // 'ld', we need to copy xx.o to cache.
+    // If aggressiveParallelCompile is enabled, copy the combined <pkgName>.o to cache.
     if (driverOptions.aggressiveParallelCompile.value_or(1) > 1) {
-        std::string destFile =
-            driverOptions.GetHashedObjFileName(FileUtil::GetFileNameWithoutExtension(outputFile)) + ".o";
+        // Compute the cache slot from THIS package's name (pkgName), not from the stale
+        // compilationCachedFileName member which UpdateCachedDirName last set to the final package emitted.
+        // In a multi-package group the flat GetHashedObjFileName would copy package A's object into a hash
+        // slot computed from the LAST package's name. The base name of outputFile equals pkgName (outputFile
+        // is "<dir>/<pkgName>.o"), so for single-package builds this yields the identical hash as before.
+        std::string destFile = driverOptions.GetHashedObjFileNameForPackage(pkgName, pkgName) + ".o";
         auto toolOfCacheCopy =
             std::make_unique<Tool>("CacheCopy", ToolType::INTERNAL_IMPLEMENTED, driverOptions.environment.allVariables);
         toolOfCacheCopy->AppendArg(outputFile);
         toolOfCacheCopy->AppendArg(destFile);
         backendCmds.emplace_back(MakeSingleToolBatch({std::move(toolOfCacheCopy)}));
     }
+}
+
+bool Gnu::PerformPartialLinkAndContinue(std::vector<TempFileInfo>& objFiles)
+{
+    // The parallel-compiled object files are named "<n>-<pkgName>.o". A single cjc invocation may now
+    // compile a group of mutually-dependent (cyclic) source packages together within one module, so the
+    // split modules here can belong to more than one package. Group them by package name and partial-link
+    // each package separately into its own "<pkgName>.o", so per-package symbols (package init once-flags,
+    // etc.) stay in distinct objects and the final archive/link does not hit "multiple definition". For the
+    // common single-package case this produces exactly one object, identical to the previous behaviour.
+    std::vector<std::pair<std::string, std::vector<TempFileInfo>>> packageGroups;
+    std::vector<TempFileInfo> foreignInputs;
+    for (const auto& objName : objFiles) {
+        if (objName.isForeignInput) {
+            foreignInputs.emplace_back(objName);
+            continue;
+        }
+        auto fileName = FileUtil::GetFileNameWithoutExtension(objName.filePath);
+        auto posOfHyphen = fileName.find("-");
+        std::string pkgName = (posOfHyphen == std::string::npos) ? fileName : fileName.substr(posOfHyphen + 1);
+        bool found = false;
+        for (auto& g : packageGroups) {
+            if (g.first == pkgName) {
+                g.second.emplace_back(objName);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            packageGroups.push_back({pkgName, {objName}});
+        }
+    }
+
+    std::vector<TempFileInfo> processedObjFiles{};
+    for (auto& group : packageGroups) {
+        PartialLinkOnePackage(group.first, group.second, processedObjFiles);
+    }
+    for (const auto& foreign : foreignInputs) {
+        processedObjFiles.emplace_back(foreign);
+    }
+    objFiles = std::move(processedObjFiles);
 
     // The '--output-type=staticlib', one more step to go, create an archive file consisting of all generated object
     // files
