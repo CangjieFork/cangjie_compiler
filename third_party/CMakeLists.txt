@@ -260,6 +260,12 @@ if(CANGJIE_CODEGEN_CJNATIVE_BACKEND) # i.e. "--compile-backend" option
             list(APPEND LLVM_CMAKE_ARGS -DCOMPILER_RT_USE_BUILTINS_LIBRARY=TRUE)
             list(APPEND LLVM_CMAKE_ARGS -DCOMPILER_RT_USE_LLVM_UNWINDER=TRUE)
             list(APPEND LLVM_CMAKE_ARGS -DSANITIZER_CXX_ABI=libc++)
+            # cjc does not need the sanitizer runtimes, and the mingw cross
+            # build of libclang_rt.asan_dynamic intermittently crashes lld
+            # ("MOV32T relocation" / segfault). Builtins are kept above.
+            list(APPEND LLVM_CMAKE_ARGS -DCOMPILER_RT_BUILD_SANITIZERS=OFF)
+            list(APPEND LLVM_CMAKE_ARGS -DCOMPILER_RT_BUILD_XRAY=OFF)
+            list(APPEND LLVM_CMAKE_ARGS -DCOMPILER_RT_BUILD_MEMPROF=OFF)
             list(APPEND LLVM_CMAKE_ARGS -DCMAKE_SYSTEM_NAME=Windows)
             list(APPEND LLVM_CMAKE_ARGS -DLLVM_HOST_TRIPLE=x86_64-w64-mingw32)
             set(NATIVE_LLVM_CMAKE_ARGS -Wno-dev|-Wno-deprecated)
