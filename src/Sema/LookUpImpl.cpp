@@ -641,6 +641,17 @@ bool LookUpImpl::LookupImpl(const std::string& name, std::string scopeName, cons
         std::multimap<Position, Ptr<Decl>> resultsMap;
         for (auto decl : targetDecls) {
             CJC_NULLPTR_CHECK(decl);
+            // A reference-type lookup must resolve to a type. When the lookup is driven by a
+            // RefType node (either the PreCheck resolve-decls stage, onlyLookUpTopLevel, or
+            // the later type-checking path that resolves a type annotation), skip non-type
+            // declarations so that a closer-scope value/member -- e.g. a property or method
+            // named the same as a type -- does not shadow the type and the walk continues
+            // outward to the scope where the type is actually declared. A non-type can never
+            // satisfy a type reference, so this never hides a valid resolution; it only
+            // changes the rare all-non-types case from "is not a type" to "undeclared".
+            if ((onlyLookUpTopLevel || node.astKind == ASTKind::REF_TYPE) && !decl->IsTypeDecl()) {
+                continue;
+            }
             if (IsTargetVisibleToNode(*decl, node)) {
                 resultsMap.emplace(decl->begin, decl);
             }
