@@ -4,6 +4,7 @@
 #
 # See https://cangjie-lang.cn/pages/LICENSE for license information.
 
+cmake_policy(SET CMP0114 NEW)
 externalproject_get_property(cjnative BINARY_DIR)
 set(LLVM_GC_BINARY_DIR "${BINARY_DIR}")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -178,7 +179,8 @@ ExternalProject_Add(
     LIST_SEPARATOR |
     CMAKE_ARGS ${LLDB_CMAKE_ARGS}
     USES_TERMINAL_BUILD ON
-    DEPENDS cjnative)
+    DEPENDS cjnative
+    STEP_TARGETS build configure)
 # Install lldb binaries, lldb, lldb-server, etc.
 install(
     DIRECTORY ${LLVM_GC_LLDB_INSTALL_PREFIX}/bin
