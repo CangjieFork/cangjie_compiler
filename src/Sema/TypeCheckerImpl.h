@@ -906,6 +906,39 @@ private:
     bool ChkCallBaseMemberAccess(
         ASTContext& ctx, AST::CallExpr& ce, Ptr<AST::Decl>& target, std::vector<Ptr<AST::FuncDecl>>& candidates);
     bool ChkCurryCallBase(ASTContext& ctx, AST::CallExpr& ce, Ptr<AST::Ty>& targetRet);
+    /**
+     * Failure recovery for a constructor call whose name was shadowed by a value member. When the base
+     * 'RefExpr' resolved to a same-named non-type, non-top-level member and the member call did not
+     * match, re-route the base to the same-named top-level struct/class/enum type and re-check the call
+     * as an object/struct creation. Reached only on the already-failed path, so a matching member call
+     * is never affected. The re-route turns the base target into a type, which the gate in
+     * 'LookupShadowedTopLevelType' rejects, so the retry cannot recurse on itself.
+     * @return true if the call type-checked successfully as a type construction, false otherwise.
+     */
+    bool RetryCallAsShadowedTypeConstruction(ASTContext& ctx, Ptr<AST::Ty> target, AST::CallExpr& ce);
+    /**
+     * Re-route a failed call base to @p typeDecl and re-check the call as an object/struct/enum
+     * construction. Shared by the post-base-resolution retry. The base is repurposed in place (RefExpr
+     * or implicit-'this' MemberAccess). Returns true iff the call then type-checks.
+     */
+    bool RetryCallAsShadowedTypeConstructionWithType(
+        ASTContext& ctx, Ptr<AST::Ty> target, AST::CallExpr& ce, AST::Decl& typeDecl);
+    /**
+     * If the call base is an unqualified name ('T(args)' RefExpr, or implicit-'this' MemberAccess)
+     * whose nearest resolution is a value member (func/prop/var) that shadows a same-named top-level
+     * struct/class/enum in scope, return that top-level type, else nullptr. Used to decide, before base
+     * resolution, whether the call might need the shadowed-type construction retry. A plain top-level
+     * type call ('T(args)' with no shadowing member) returns nullptr, so its path is unaffected.
+     */
+    Ptr<AST::Decl> ShadowedCallBaseTypeCandidate(const ASTContext& ctx, const AST::CallExpr& ce);
+    /**
+     * Cheap pre-check (no symbol lookup) for whether 'RetryCallAsShadowedTypeConstruction' could apply:
+     * the call base must be a plain, un-desugared 'RefExpr' currently bound to a value member
+     * (func/prop/var) that is neither a type nor a top-level declaration. Used to decide whether to
+     * suppress the member-match diagnostics so a successful construction retry does not leak them. Keeps
+     * the common, non-conflicting call path unchanged.
+     */
+    bool MayRetryCallAsShadowedTypeConstruction(const ASTContext& ctx, const AST::CallExpr& ce) const;
     bool CheckNonNormalCall(ASTContext& ctx, Ptr<AST::Ty> target, AST::CallExpr& ce);
     bool ChkFunctionCallExpr(ASTContext& ctx, Ptr<AST::Ty> target, AST::CallExpr& ce);
     bool ChkVariadicCallExpr(ASTContext& ctx, Ptr<AST::Ty> target, AST::CallExpr& ce,
@@ -1216,6 +1249,26 @@ private:
     void InferBuiltInStaticAccess(const ASTContext& ctx, AST::MemberAccess& ma, const AST::BuiltInDecl& bid);
     void InferInstanceAccess(const ASTContext& ctx, AST::MemberAccess& ma);
     void InferStaticAccess(const ASTContext& ctx, AST::MemberAccess& ma, AST::Decl& targetOfBaseExpr);
+    /**
+     * Cangjie shares one lookup namespace for types and values, so a value member (func/prop/var)
+     * declared in a closer scope shadows a same-named top-level type at the expression position.
+     * When such a member resolution leaves the surrounding construct broken -- a constructor call
+     * 'T(args)' has no matching member function, or a static access 'T.foo' degenerates into an
+     * impossible instance access -- this helper retries by looking up the same-named top-level type
+     * (which 'LookupTopLevel' resolves past the shadowing member). It only returns a type when the
+     * base 'RefExpr' currently targets a shadowed non-type, non-top-level member, so a legal
+     * value-position shadowing that resolves successfully is never re-routed.
+     * @return the same-named top-level struct/class/enum type if exactly one exists, else nullptr.
+     */
+    Ptr<AST::Decl> LookupShadowedTopLevelType(const ASTContext& ctx, const AST::RefExpr& base);
+    /**
+     * Name-based core of the shadowed-type lookup, shared by the RefExpr and (implicit-this)
+     * MemberAccess call-base cases. Looks up a same-named top-level struct/class/enum at @p node 's
+     * scope, skipping the shadowing value member via 'LookupTopLevel'. The caller guarantees the
+     * current resolution is a shadowed non-type member.
+     */
+    Ptr<AST::Decl> LookupShadowedTopLevelTypeByName(
+        const ASTContext& ctx, const std::string& name, const std::string& scopeName, const AST::Node& node);
     void CheckExtendField(const ASTContext& ctx, AST::MemberAccess& ma);
     /** Filter targets that @p ma 's instantiated types does not satisfied with extend's generic constraints. */
     bool FilterTargetsInExtend(

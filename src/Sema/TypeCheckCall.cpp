@@ -2960,6 +2960,190 @@ void TypeChecker::TypeCheckerImpl::PostProcessForLSP(CallExpr& ce, const std::ve
     }
 }
 
+namespace {
+// Extracts the unqualified name a call base refers to, for the shadowed-type retry. The base is
+// either a plain RefExpr ('Foo(...)') or an implicit-'this' MemberAccess ('this.Foo(...)', produced
+// when an unqualified reference inside a type body resolves to an instance member). Returns false for
+// any other base, or for desugared/macro/sourceExpr calls that must not be re-routed.
+bool GetUnqualifiedCallBaseName(const CallExpr& ce, std::string& name)
+{
+    if (ce.sourceExpr || ce.desugarExpr || !ce.baseFunc ||
+        ce.baseFunc->TestAttr(Attribute::MACRO_INVOKE_BODY)) {
+        return false;
+    }
+    if (ce.baseFunc->astKind == ASTKind::REF_EXPR) {
+        name = StaticAs<ASTKind::REF_EXPR>(ce.baseFunc.get())->ref.identifier;
+        return true;
+    }
+    if (ce.baseFunc->astKind == ASTKind::MEMBER_ACCESS) {
+        auto ma = StaticAs<ASTKind::MEMBER_ACCESS>(ce.baseFunc.get());
+        auto baseRe = ma->baseExpr ? DynamicCast<RefExpr*>(ma->baseExpr.get()) : nullptr;
+        if (!baseRe || !baseRe->isThis) {
+            return false;
+        }
+        name = ma->field;
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+Ptr<Decl> TypeChecker::TypeCheckerImpl::ShadowedCallBaseTypeCandidate(
+    const ASTContext& ctx, const CallExpr& ce)
+{
+    std::string name;
+    if (!GetUnqualifiedCallBaseName(ce, name)) {
+        return nullptr;
+    }
+    // A desugared/synthesized call base (e.g. a 'StringBuilder' call produced by string interpolation)
+    // carries no scope; without a scope the symbol-table lookup is invalid. Such a node is never a
+    // user-written shadowing case, so skip it.
+    if (ce.baseFunc->scopeName.empty()) {
+        return nullptr;
+    }
+    // The nearest unqualified resolution of the name must be a value member (func/prop/var) -- only
+    // then is a same-named top-level type actually shadowed. A name that already resolves to the type
+    // itself (an ordinary 'T(args)' constructor call) is left entirely to the normal path; this also
+    // avoids touching the common constructor-call case.
+    auto nearest = Lookup(ctx, name, ce.baseFunc->scopeName, *ce.baseFunc);
+    if (nearest.empty()) {
+        return nullptr;
+    }
+    Ptr<Decl> nearestDecl = nearest.front();
+    if (!nearestDecl || nearestDecl->IsTypeDecl() || nearestDecl->TestAttr(Attribute::GLOBAL)) {
+        return nullptr;
+    }
+    if (nearestDecl->astKind != ASTKind::FUNC_DECL && nearestDecl->astKind != ASTKind::PROP_DECL &&
+        nearestDecl->astKind != ASTKind::VAR_DECL) {
+        return nullptr;
+    }
+    // A same-named top-level struct/class/enum must also exist for the construction retry to be viable.
+    return LookupShadowedTopLevelTypeByName(ctx, name, ce.baseFunc->scopeName, *ce.baseFunc);
+}
+
+bool TypeChecker::TypeCheckerImpl::RetryCallAsShadowedTypeConstructionWithType(
+    ASTContext& ctx, Ptr<Ty> target, CallExpr& ce, Decl& typeDecl)
+{
+    Ptr<Node> base = ce.baseFunc.get();
+    if (!base || !Ty::IsTyCorrect(typeDecl.GetTy()) ||
+        (base->astKind != ASTKind::REF_EXPR && base->astKind != ASTKind::MEMBER_ACCESS)) {
+        return false;
+    }
+    // Snapshot the base/call state so a failed retry restores it exactly and the caller can reproduce
+    // the original (member-based) diagnostics. The retry's own diagnostics are suppressed; on success
+    // none are emitted, on failure the snapshot is restored and the suppressed ones are discarded.
+    Ptr<Decl> savedTarget = base->GetTarget();
+    Ptr<Ty> savedBaseTy = base->GetTy();
+    std::vector<Ptr<Decl>> savedRefTargets;
+    Ptr<TypeAliasDecl> savedAlias = nullptr;
+    if (base->astKind == ASTKind::REF_EXPR) {
+        auto re = StaticAs<ASTKind::REF_EXPR>(base);
+        savedRefTargets = re->ref.targets;
+        savedAlias = re->aliasTarget;
+    } else {
+        auto ma = StaticAs<ASTKind::MEMBER_ACCESS>(base);
+        savedRefTargets.assign(ma->targets.begin(), ma->targets.end());
+        savedAlias = ma->aliasTarget;
+    }
+    CallKind savedCallKind = ce.callKind;
+    Ptr<FuncDecl> savedResolvedFunc = ce.resolvedFunction;
+    Ptr<Ty> savedCeTy = ce.GetTy();
+
+    bool ok;
+    {
+        auto ds = DiagSuppressor(diag); // Suppress the retry's diagnostics.
+        // Pin the call base to the type. Setting a valid, non-placeholder ty makes the re-synthesis of
+        // the base (in the recursive ChkCallExpr) keep this type target instead of resolving back to the
+        // shadowing member. After the re-route the base resolves cleanly to the type, so a nested pass
+        // finds no shadowed member and there is no infinite retry.
+        if (base->astKind == ASTKind::REF_EXPR) {
+            auto re = StaticAs<ASTKind::REF_EXPR>(base);
+            ReplaceTarget(re, &typeDecl);
+            re->aliasTarget = nullptr;
+            re->ref.targets.clear();
+            re->callOrPattern = &ce;
+            re->isAlone = false;
+        } else {
+            auto ma = StaticAs<ASTKind::MEMBER_ACCESS>(base);
+            ReplaceTarget(ma, &typeDecl);
+            ma->aliasTarget = nullptr;
+            ma->targets.clear();
+            ma->callOrPattern = &ce;
+            ma->isAlone = false;
+        }
+        base->SetTy(typeDecl.GetTy());
+        ce.callKind = CallKind::CALL_INVALID;
+        ce.resolvedFunction = nullptr;
+        ce.SetTy(Ty::GetInitialTy());
+        PData::Reset(typeManager.constraints);
+        ok = ChkCallExpr(ctx, target, ce) && Ty::IsTyCorrect(ce.GetTy());
+    }
+    if (ok) {
+        return true;
+    }
+    // Restore the original base/call state so the caller's normal path reproduces the genuine error.
+    if (base->astKind == ASTKind::REF_EXPR) {
+        auto re = StaticAs<ASTKind::REF_EXPR>(base);
+        ReplaceTarget(re, savedTarget);
+        re->aliasTarget = savedAlias;
+        re->ref.targets = savedRefTargets;
+    } else {
+        auto ma = StaticAs<ASTKind::MEMBER_ACCESS>(base);
+        ReplaceTarget(ma, savedTarget);
+        ma->aliasTarget = savedAlias;
+        ma->targets.clear();
+        for (auto d : savedRefTargets) {
+            if (auto fd = DynamicCast<FuncDecl*>(d)) {
+                ma->targets.push_back(fd);
+            }
+        }
+    }
+    base->SetTy(savedBaseTy);
+    ce.callKind = savedCallKind;
+    ce.resolvedFunction = savedResolvedFunc;
+    ce.SetTy(savedCeTy);
+    PData::Reset(typeManager.constraints);
+    return false;
+}
+
+bool TypeChecker::TypeCheckerImpl::MayRetryCallAsShadowedTypeConstruction(
+    const ASTContext& ctx, const CallExpr& ce) const
+{
+    std::string name;
+    if (!GetUnqualifiedCallBaseName(ce, name)) {
+        return false;
+    }
+    // The base must currently resolve to a value member (func/prop/var) that is neither a type nor
+    // top-level -- only such a member shadows a same-named top-level type in a value position.
+    Ptr<Decl> target = nullptr;
+    if (ce.baseFunc->astKind == ASTKind::REF_EXPR) {
+        target = StaticAs<ASTKind::REF_EXPR>(ce.baseFunc.get())->ref.target;
+    } else {
+        target = StaticAs<ASTKind::MEMBER_ACCESS>(ce.baseFunc.get())->target;
+    }
+    if (!target || target->IsTypeDecl() || target->TestAttr(Attribute::GLOBAL)) {
+        return false;
+    }
+    return target->astKind == ASTKind::FUNC_DECL || target->astKind == ASTKind::PROP_DECL ||
+        target->astKind == ASTKind::VAR_DECL;
+}
+
+bool TypeChecker::TypeCheckerImpl::RetryCallAsShadowedTypeConstruction(
+    ASTContext& ctx, Ptr<Ty> target, CallExpr& ce)
+{
+    // Precondition (checked by the callers via 'MayRetryCallAsShadowedTypeConstruction'): the base is
+    // an unqualified name resolved to a shadowed value member. Look up the same-named top-level type.
+    std::string name;
+    if (!GetUnqualifiedCallBaseName(ce, name) || ce.baseFunc->scopeName.empty()) {
+        return false;
+    }
+    auto typeDecl = LookupShadowedTopLevelTypeByName(ctx, name, ce.baseFunc->scopeName, *ce.baseFunc);
+    if (!typeDecl) {
+        return false;
+    }
+    return RetryCallAsShadowedTypeConstructionWithType(ctx, target, ce, *typeDecl);
+}
+
 // The type of CallExpr depends on the type of its baseExpr, which can be refExpr or memberAccess.
 bool TypeChecker::TypeCheckerImpl::ChkCallExpr(ASTContext& ctx, Ptr<Ty> target, CallExpr& ce)
 {
@@ -2984,7 +3168,32 @@ bool TypeChecker::TypeCheckerImpl::ChkCallExpr(ASTContext& ctx, Ptr<Ty> target, 
     // Decl only be set when call base is valid RefExpr or MemberAccess.
     Ptr<Decl> decl{nullptr};
     std::vector<Ptr<FuncDecl>> candidates;
-    if (!ChkCallBaseExpr(ctx, ce, decl, target, candidates)) {
+    // A call like 'T(args)' whose base name 'T' is a value member shadowing a same-named top-level
+    // type may fail during base resolution itself (the member is treated as a function value and its
+    // argument count does not match). Only when 'T' could be such a shadowing case (an unqualified
+    // name with a same-named top-level struct/class/enum in scope) do we resolve the base under
+    // diagnosis suppression, so its error can be discarded if the construction retry succeeds. For
+    // every other call the path is byte-for-byte unchanged.
+    Ptr<Decl> ctorTypeCandidate = ShadowedCallBaseTypeCandidate(ctx, ce);
+    std::vector<Diagnostic> baseDiags;
+    bool baseOk;
+    if (ctorTypeCandidate) {
+        {
+            auto ds = DiagSuppressor(diag);
+            baseOk = ChkCallBaseExpr(ctx, ce, decl, target, candidates);
+            baseDiags = ds.GetSuppressedDiag();
+        } // 'ds' must be destroyed here so the diagnostics flushed below are not re-suppressed.
+        // Retry only if the base genuinely failed to resolve as a member call; a base that resolved to
+        // the type itself (no shadowing member) is handled by the normal path below.
+        if (!baseOk && RetryCallAsShadowedTypeConstructionWithType(ctx, target, ce, *ctorTypeCandidate)) {
+            return true;
+        }
+        // No retry (or it failed): surface the originally suppressed base-resolution diagnostics.
+        std::for_each(baseDiags.cbegin(), baseDiags.cend(), [this](auto info) { diag.Diagnose(info); });
+    } else {
+        baseOk = ChkCallBaseExpr(ctx, ce, decl, target, candidates);
+    }
+    if (!baseOk) {
         // If no call base exist, expr may be array or pointer builtin api call.
         return ChkBuiltinCall(ctx, *TypeManager::GetNonNullTy(target), ce);
     }
@@ -3001,7 +3210,13 @@ bool TypeChecker::TypeCheckerImpl::ChkCallExpr(ASTContext& ctx, Ptr<Ty> target, 
 
     // Step 2: Check & set callKind.
     // Function pointer call, operator () function call and non-valid call base, return false.
+    bool mayRetryAsTypeCtor = MayRetryCallAsShadowedTypeConstruction(ctx, ce);
     if (!CheckCallKind(ce, decl, ce.callKind)) {
+        // A base that is a value member shadowing a same-named top-level type can land here as a
+        // function-value call ('getter(args)'); retry it as a type construction first.
+        if (mayRetryAsTypeCtor && RetryCallAsShadowedTypeConstruction(ctx, target, ce)) {
+            return true;
+        }
         return CheckNonNormalCall(ctx, target, ce);
     }
     if (ce.callKind == CallKind::CALL_INVALID) {
@@ -3014,13 +3229,16 @@ bool TypeChecker::TypeCheckerImpl::ChkCallExpr(ASTContext& ctx, Ptr<Ty> target, 
     bool maybeEnumOverloadOP = IsPossibleEnumConstructor(candidates, *ce.baseFunc);
     bool maybeVariadicFunction = IsPossibleVariadicFunction(candidates, ce);
     bool maybeEnumOrVariadic = maybeEnumOverloadOP || maybeVariadicFunction;
+    // When the call base is a value member shadowing a same-named top-level type, the member-based
+    // match may fail; suppress its diagnostics so they do not leak if the type-construction retry
+    // below succeeds. The captured diagnostics are replayed only when no recovery applies.
     // Do not diagnose when candidates may be enum constructor or operator().
     // Step 3: Check whether function candidates matched.
     SubstPack typeMapping;
     std::vector<Ptr<FuncDecl>> result;
     std::vector<Diagnostic> diagnostics;
     PData::CommitScope cs(typeManager.constraints);
-    if (maybeEnumOrVariadic) {
+    if (maybeEnumOrVariadic || mayRetryAsTypeCtor) {
         auto ds = DiagSuppressor(diag);
         result = MatchFunctionForCall(ctx, candidates, ce, target, typeMapping);
         diagnostics = ds.GetSuppressedDiag();
@@ -3038,6 +3256,21 @@ bool TypeChecker::TypeCheckerImpl::ChkCallExpr(ASTContext& ctx, Ptr<Ty> target, 
         (maybeVariadicFunction && result.empty() && ChkVariadicCallExpr(ctx, target, ce, candidates, diagnostics));
     if (ret) {
         return true;
+    }
+    // Failure-then-retry: the call base resolved to a value member (e.g. a property getter) that
+    // shadowed a same-named top-level type, and no member function matched -- so the construct can
+    // only be valid as a constructor call 'T(args)'. Re-route the base to the type and retry as an
+    // object/struct creation. This is reached only after every member-based interpretation has failed,
+    // so a successful member call (the normal value-position shadowing) is never re-routed.
+    if (mayRetryAsTypeCtor && RetryCallAsShadowedTypeConstruction(ctx, target, ce)) {
+        return true;
+    }
+    // The type-construction retry did not apply or also failed. Replay the member-match diagnostics
+    // that were suppressed for the retry attempt so the original error is reported exactly as before.
+    // Leaving 'diagnostics' non-empty makes the block below skip 'DiagnoseForCall', mirroring the
+    // enum/variadic recovery path that also substitutes its captured diagnostics for it.
+    if (mayRetryAsTypeCtor && !maybeEnumOrVariadic && !diagnostics.empty()) {
+        std::for_each(diagnostics.cbegin(), diagnostics.cend(), [this](auto info) { diag.Diagnose(info); });
     }
     // If no matching or having multiple matching candidates, generate diagnosis.
     if (diagnostics.empty()) {

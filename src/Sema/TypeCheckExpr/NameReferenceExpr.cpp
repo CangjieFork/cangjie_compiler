@@ -535,6 +535,53 @@ void TypeChecker::TypeCheckerImpl::TryInitializeBaseSum(ASTContext& ctx, MemberA
     TryEnforceCandidate(*tv, ctx.Mem2Decls(sig), typeManager);
 }
 
+Ptr<Decl> TypeChecker::TypeCheckerImpl::LookupShadowedTopLevelTypeByName(
+    const ASTContext& ctx, const std::string& name, const std::string& scopeName, const Node& node)
+{
+    // A missing scope (synthesized/desugared node) cannot be looked up in the symbol table and would
+    // mis-report 'symbol not collected'; such nodes are never the user-written shadowing case.
+    if (scopeName.empty() || name.empty()) {
+        return nullptr;
+    }
+    // LookupTopLevel sets onlyLookUpTopLevel, which makes the lookup skip the shadowing non-type member
+    // and walk outward to the scope where a same-named type is declared.
+    auto topLevel = LookupTopLevel(ctx, name, scopeName, node);
+    Ptr<Decl> found = nullptr;
+    for (auto decl : topLevel) {
+        if (decl == nullptr || !decl->IsTypeDecl()) {
+            continue;
+        }
+        // Only struct/class/enum can be both constructed and statically accessed; interface/typealias/
+        // generic-param do not participate in the broken constructs we are recovering.
+        if (!decl->IsStructOrClassDecl() && decl->astKind != ASTKind::ENUM_DECL) {
+            continue;
+        }
+        if (found != nullptr && found != decl) {
+            return nullptr; // Ambiguous: more than one same-named top-level type, do not guess.
+        }
+        found = decl;
+    }
+    return found;
+}
+
+Ptr<Decl> TypeChecker::TypeCheckerImpl::LookupShadowedTopLevelType(const ASTContext& ctx, const RefExpr& base)
+{
+    // Gate: only attempt the retry when the base currently resolves to a value member (func/prop/var)
+    // that is neither a type nor a top-level declaration. Such a target can only come from a closer
+    // (e.g. nominal-decl body) scope that shadowed a same-named top-level type; a globally scoped or
+    // a type target is a legitimate resolution and must never be re-routed. This keeps the lookup off
+    // the hot path for the common, non-conflicting case.
+    auto target = base.ref.target;
+    if (!target || target->IsTypeDecl() || target->TestAttr(Attribute::GLOBAL)) {
+        return nullptr;
+    }
+    if (target->astKind != ASTKind::FUNC_DECL && target->astKind != ASTKind::PROP_DECL &&
+        target->astKind != ASTKind::VAR_DECL) {
+        return nullptr;
+    }
+    return LookupShadowedTopLevelTypeByName(ctx, base.ref.identifier, base.scopeName, base);
+}
+
 void TypeChecker::TypeCheckerImpl::InferMemberAccess(ASTContext& ctx, MemberAccess& ma)
 {
     if (ma.target && Ty::IsTyCorrect(ma.GetTy())) {
@@ -573,7 +620,44 @@ void TypeChecker::TypeCheckerImpl::InferMemberAccess(ASTContext& ctx, MemberAcce
         auto range = ma.field.ZeroPos() ? MakeRange(ma.begin, ma.end) : MakeRange(ma.field);
         (void)diag.DiagnoseRefactor(DiagKindRefactor::sema_undeclared_identifier, ma, range, ma.field);
     } else {
-        InferInstanceAccess(ctx, ma);
+        // Failure-then-retry: when the base resolves to a value member that shadowed a same-named
+        // top-level type, 'T.foo' is not an instance access but a static access on the type. Try the
+        // instance access first (the normal value-position shadowing path) under diagnosis suppression.
+        // If it fails and a same-named top-level type exists, re-route the base to the type and resolve
+        // the access statically. The suppression keeps the instance-access "not a member" error from
+        // leaking when the static retry succeeds; otherwise the original error is surfaced as before.
+        Ptr<Decl> shadowedType = nullptr;
+        {
+            auto ds = DiagSuppressor(diag);
+            InferInstanceAccess(ctx, ma);
+            // Retry as static-on-type only when instance access found NO member at all. A member that
+            // WAS found but whose ty is still deferred (a func call base resolves to a Quest ty pending
+            // overload resolution, e.g. `field.hashCode()` where `field`'s name shadows a type) is a
+            // successful instance access -- re-routing it to the type would wrongly turn it into a
+            // static access on the shadowed type. So gate on "no target and no candidate funcs".
+            if (!ma.target && ma.targets.empty() && baseExpr->astKind == ASTKind::REF_EXPR) {
+                if (auto typeDecl = LookupShadowedTopLevelType(ctx, *StaticAs<ASTKind::REF_EXPR>(baseExpr));
+                    typeDecl && Ty::IsTyCorrect(typeDecl->GetTy())) {
+                    shadowedType = typeDecl;
+                }
+            }
+            if (!shadowedType) {
+                ds.ReportDiag(); // No re-route: surface the original instance-access diagnostics.
+            }
+        }
+        if (shadowedType) {
+            // Re-route the base to the type and resolve statically, unsuppressed so a genuine
+            // "static member not found" on the type is still reported.
+            auto baseRef = StaticAs<ASTKind::REF_EXPR>(baseExpr);
+            ReplaceTarget(baseRef, shadowedType);
+            baseRef->aliasTarget = nullptr;
+            baseRef->ref.targets.clear();
+            baseRef->SetTy(shadowedType->GetTy());
+            ma.targets.clear();
+            ReplaceTarget(&ma, nullptr);
+            ma.SetTy(Ty::GetInitialTy());
+            InferStaticAccess(ctx, ma, *shadowedType);
+        }
     }
     if (!ma.target) {
         return;
