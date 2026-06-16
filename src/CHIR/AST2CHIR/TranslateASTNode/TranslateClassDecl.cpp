@@ -56,7 +56,19 @@ void Translator::TranslateClassLikeDecl(ClassDef& classDef, const AST::ClassLike
     classDef.SetType(*baseTy);
     bool isImportedInstantiated =
         decl.TestAttr(AST::Attribute::IMPORTED) && decl.TestAttr(AST::Attribute::GENERIC_INSTANTIATED);
-    classDef.Set<LinkTypeInfo>(isImportedInstantiated ? Linkage::INTERNAL : decl.linkage);
+    auto tiLinkage = isImportedInstantiated ? Linkage::INTERNAL : decl.linkage;
+    // A type info with INTERNAL linkage is invisible across object files. When a package is compiled into
+    // several object files (a split/cyclic subpackage group, or any multi-source-file package), the type
+    // info of a non-exported (private/internal) class -- e.g. the per-interface Owned* wrappers the
+    // @Interface macro generates -- is emitted into one object file yet referenced from the others, so the
+    // cross-object-file references stay unresolved and the final executable link fails. Promote an INTERNAL
+    // type info to LINKONCE_ODR: the class visibility and .cjo export are unchanged (so cross-package import
+    // behaviour is identical), but the type info becomes visible and ODR-mergeable across object files
+    // within the linked binary.
+    if (tiLinkage == Linkage::INTERNAL) {
+        tiLinkage = Linkage::LINKONCE_ODR;
+    }
+    classDef.Set<LinkTypeInfo>(tiLinkage);
 
     // common and specific upper bounds are same, do not set again
     // specific instantiations require inheritance setup because common side uses templates without instantiation

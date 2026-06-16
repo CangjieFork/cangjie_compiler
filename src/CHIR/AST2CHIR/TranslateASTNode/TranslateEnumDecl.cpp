@@ -44,7 +44,14 @@ Ptr<Value> Translator::Visit(const AST::EnumDecl& decl)
     // step 2: set type
     auto chirType = StaticCast<EnumType*>(TranslateType(*decl.GetTy()));
     enumDef->SetType(*chirType);
-    enumDef->Set<LinkTypeInfo>(decl.TestAttr(AST::Attribute::GENERIC_INSTANTIATED) ? Linkage::INTERNAL : decl.linkage);
+    auto enumTiLinkage =
+        decl.TestAttr(AST::Attribute::GENERIC_INSTANTIATED) ? Linkage::INTERNAL : decl.linkage;
+    // Promote an INTERNAL type info to LINKONCE_ODR so it stays visible/mergeable across the object files
+    // of a multi-source-file package (see the matching note in TranslateClassDecl); .cjo export is unchanged.
+    if (enumTiLinkage == Linkage::INTERNAL) {
+        enumTiLinkage = Linkage::LINKONCE_ODR;
+    }
+    enumDef->Set<LinkTypeInfo>(enumTiLinkage);
 
     // step 3: set constructor
     // e.g. enum A { red | yellow | blue(Int32) }
