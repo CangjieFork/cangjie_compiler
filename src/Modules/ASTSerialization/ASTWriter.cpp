@@ -13,6 +13,7 @@
 
 #include <optional>
 #include <queue>
+#include "cangjie/Mangle/BaseMangler.h"
 
 #include "cangjie/AST/AttributePack.h"
 #include "cangjie/Option/Option.h"
@@ -858,9 +859,21 @@ TFullIdOffset ASTWriter::ASTWriterImpl::GetFullDeclIndex(Ptr<const Decl> decl)
         // still routes external as intended.
         auto pkgIndex = static_cast<PackageIndex>(SavePackageName(decl->fullPackageName));
         importedDeclPkgNames.emplace(decl->fullPackageName);
+        // The external reference is keyed by the target decl's 'exportId', which the consumer matches
+        // against the home package's exportId->decl map. In a cyclic group compiled together, the
+        // common-part / sibling serialization can run BEFORE the target package's ExportAST has mangled
+        // its exportIds, so 'exportId' is still empty here. Falling back to the raw identifier (which the
+        // consumer keys by the mangled exportId) makes the reference unresolvable -> Invalid type -> CHIR
+        // crash. Compute the exportId on the fly so it matches the key the home package will use.
+        std::string refExportId = decl->exportId;
+        if (refExportId.empty()) {
+            refExportId = BaseMangler{}.Mangle(*decl);
+        }
+        if (refExportId.empty()) {
+            refExportId = decl->identifier.Val();
+        }
         // NOTE: FullId using 'int32' to distinguish with current package and invalid references.
-        return PackageFormat::CreateFullId(
-            builder, pkgIndex, builder.CreateString(decl->exportId.empty() ? decl->identifier.Val() : decl->exportId));
+        return PackageFormat::CreateFullId(builder, pkgIndex, builder.CreateString(refExportId));
     } else {
         auto index = PreSaveDecl(*decl);
         return PackageFormat::CreateFullId(builder, CURRENT_PKG_INDEX, 0, index);
