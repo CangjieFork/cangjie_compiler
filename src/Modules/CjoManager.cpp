@@ -624,13 +624,35 @@ std::pair<std::string, std::string> CjoManager::GetPackageCjo(const AST::ImportS
     std::string cjoPath;
     std::string cjoName;
     std::string cjoPackageName;
+    // An in-group source package (a sibling/parent/child compiled together in the same
+    // multi-`-p` invocation, e.g. a circular subpackage group) has no `.cjo` on disk yet,
+    // but is already registered in the package map. For a non-wildcard import like
+    // `import a.b.c` the candidate list is ordered most-specific-first (`a.b.c`, then `a.b`).
+    // Without special handling the resolver picks the first candidate whose `.cjo` exists
+    // on disk (or, if none, the last/least-specific candidate) and resolves `a.b.c` as
+    // member `c` of package `a.b` -- which is wrong when the real target is the in-group
+    // subpackage `a.b.c`. That misfires whenever a less-specific ancestor package
+    // (e.g. the library root `a`) has already produced a `.cjo`. Remember the
+    // most-specific candidate that names a registered package; it outranks any
+    // less-specific on-disk `.cjo`, so qualified / aliased / namespace imports of an
+    // in-group sibling resolve the same way wildcard imports already do.
+    std::string inGroupPackageName;
     for (auto it : GetPossibleCjoNames(importSpec)) {
         cjoName = it;
         cjoPackageName = FileUtil::ToPackageName(cjoName);
+        if (inGroupPackageName.empty() && impl->GetPackageInfo(cjoPackageName) != nullptr) {
+            inGroupPackageName = cjoPackageName;
+        }
         cjoPath = FindCjoPath(*impl, cjoPackageName, cjoName, GetSearchPath());
         if (!cjoPath.empty()) {
             break;
         }
+    }
+    if (!inGroupPackageName.empty() && inGroupPackageName != cjoPackageName) {
+        // A more-specific in-group source package outranks the less-specific candidate the
+        // disk lookup settled on; the in-group package has no `.cjo` of its own yet.
+        cjoPackageName = inGroupPackageName;
+        cjoPath.clear();
     }
     CJC_ASSERT(!cjoName.empty());
     // Store importSpec with packageName.
