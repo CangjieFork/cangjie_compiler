@@ -87,6 +87,55 @@ void CloseTempFileHandle()
     }
 }
 #endif
+
+#if defined(_WIN32)
+// [CRASH-BACKTRACE] 信号安全的崩溃栈打印：每帧打印所在模块基址相对偏移(RVA)，离线用 llvm-symbolizer 解析。
+void AsyncSigSafePutHex(uint64_t num)
+{
+    const char* hex = "0123456789abcdef";
+    char tmp[24];
+    int i = 0;
+    if (num == 0) {
+        (void)write(g_errorFd, "0", 1);
+        return;
+    }
+    while (num != 0 && i < 24) {
+        tmp[i++] = hex[num & 0xf];
+        num >>= 4;
+    }
+    char out[24];
+    for (int j = 0; j < i; j++) {
+        out[j] = tmp[i - 1 - j];
+    }
+    (void)write(g_errorFd, out, static_cast<size_t>(i));
+}
+
+void PrintCrashBacktrace()
+{
+    void* frames[80];
+    USHORT n = RtlCaptureStackBackTrace(0, 80, frames, nullptr);
+    (void)AsyncSigSafeWriteToError("=== CRASH_BACKTRACE_BEGIN ===\n");
+    for (USHORT i = 0; i < n; i++) {
+        HMODULE hm = nullptr;
+        char modName[MAX_PATH] = {0};
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(frames[i]), &hm)) {
+            (void)GetModuleFileNameA(hm, modName, MAX_PATH);
+        }
+        uint64_t rva = reinterpret_cast<uint64_t>(frames[i]) - reinterpret_cast<uint64_t>(hm);
+        const char* slash = strrchr(modName, '\\');
+        (void)AsyncSigSafeWriteToError("CRASH_FRAME ");
+        (void)AsyncSigSafePut(i);
+        (void)AsyncSigSafeWriteToError(" ");
+        (void)AsyncSigSafeWriteToError(slash != nullptr ? slash + 1 : (modName[0] != '\0' ? modName : "?"));
+        (void)AsyncSigSafeWriteToError(" +0x");
+        AsyncSigSafePutHex(rva);
+        (void)AsyncSigSafeWriteToError("\n");
+    }
+    (void)AsyncSigSafeWriteToError("=== CRASH_BACKTRACE_END ===\n");
+}
+#endif
 } // namespace
 
 using namespace Cangjie;
@@ -122,6 +171,9 @@ void Signal::ConcurrentSynchronousSignalHandler(int signum)
 {
     ThreadDelaySynchronizer();
     WriteICEMessage(signum);
+#if defined(_WIN32)
+    PrintCrashBacktrace();
+#endif
     Cangjie::TempFileManager::Instance().DeleteTempFilesSignalSafe();
     int exitCode = 128 + signum; // Add 128 to return the same error code as if the program crashed.
     _exit(exitCode);
