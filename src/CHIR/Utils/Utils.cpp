@@ -1402,6 +1402,22 @@ Type* GetInstParentCustomTyOfCallee(
                 matchedTypes.emplace_back(pType);
             }
         }
+        if (matchedTypes.empty()) {
+            /**
+             * The callee's parent is not reachable through the receiver's super-type chain.
+             * This happens for an interface method invoked via a generic constraint rather than
+             * inheritance: e.g. WinRT collections call the static `Interface<T>::
+             * fromAbiTakeWinrtHandle` on a constrained type parameter, so the concrete receiver
+             * (IVector<HString>, ...) does not list `windows_core.Interface` among its supers.
+             * GetInstParentType would then receive an empty candidate set and return null, which
+             * in a release build (assertions off) flows into codegen's CreateOuterTypeInfo ->
+             * CreateTypeInfo and dereferences a null Type. The receiver is the concrete type the
+             * call dispatches on and the binding the static method resolves against, so it is the
+             * correct outer type here; returning the (possibly unbound-generic) parent def's type
+             * instead would crash CreateTypeInfo on an uninstantiated generic.
+             */
+            return derefThisType;
+        }
         return GetInstParentType(matchedTypes, *callee, args, builder);
     }
 }
