@@ -16,6 +16,8 @@
 
 #include "cangjie/Utils/Utils.h"
 
+#include <fstream>
+
 #include <fcntl.h>
 #include <functional>
 #if (defined(__linux__) && !defined(__ohos__) && !defined(__android__)) || defined(_WIN32)
@@ -130,6 +132,41 @@ std::string GetMacroFuncName(const std::string& fullPackageName, bool isAttr, co
     return macroFuncName;
 }
 
+void ExpandResponseFiles(std::vector<std::string>& args)
+{
+    bool hasResponseFile = false;
+    for (const auto& arg : args) {
+        if (arg.size() > 1 && arg[0] == '@') {
+            hasResponseFile = true;
+            break;
+        }
+    }
+    if (!hasResponseFile) {
+        return;
+    }
+    std::vector<std::string> expanded;
+    expanded.reserve(args.size());
+    for (const auto& arg : args) {
+        if (arg.size() > 1 && arg[0] == '@') {
+            std::ifstream ifs(arg.substr(1));
+            if (ifs.is_open()) {
+                std::string line;
+                while (std::getline(ifs, line)) {
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
+                    if (!line.empty()) {
+                        expanded.push_back(line);
+                    }
+                }
+                continue;
+            }
+        }
+        expanded.push_back(arg);
+    }
+    args = std::move(expanded);
+}
+
 std::vector<std::string> StringifyArgumentVector(int argc, const char** argv)
 {
     std::vector<std::string> args;
@@ -140,6 +177,7 @@ std::vector<std::string> StringifyArgumentVector(int argc, const char** argv)
         }
         args.emplace_back(argv[i]);
     }
+    ExpandResponseFiles(args);
     return args;
 }
 

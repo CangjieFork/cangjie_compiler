@@ -272,6 +272,10 @@ std::string GenerateRandomHexString();
 std::optional<int> TryParseInt(const std::string& str);
 
 std::vector<std::string> StringifyArgumentVector(int argc, const char** argv);
+// Expand any @<file> response-file arguments in place: each is replaced by the
+// lines of <file> (one argument per line). Works around the OS command-line
+// length limit for very large compilations.
+void ExpandResponseFiles(std::vector<std::string>& args);
 std::unordered_map<std::string, std::string> StringifyEnvironmentPointer(const char** envp);
 
 std::string GetRootPackageName(const std::string& fullPackageName);

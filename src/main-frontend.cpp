@@ -8,6 +8,7 @@
 #include <vector>
 #include <windows.h>
 #include <sstream>
+#include <fstream>
 
 namespace {
 
@@ -45,6 +46,33 @@ int main(int argc, const char** argv)
     std::vector<std::string> args;
     for (int i = 0; i < argc; ++i) {
         args.emplace_back(argv[i]);
+    }
+    // Expand @<file> response-file arguments (one argument per line) so the driver
+    // can pass a very large argument set past the OS command-line length limit.
+    {
+        bool hasResponseFile = false;
+        for (const auto& a : args) {
+            if (a.size() > 1 && a[0] == '@') { hasResponseFile = true; break; }
+        }
+        if (hasResponseFile) {
+            std::vector<std::string> expanded;
+            expanded.reserve(args.size());
+            for (const auto& a : args) {
+                if (a.size() > 1 && a[0] == '@') {
+                    std::ifstream ifs(a.substr(1));
+                    if (ifs.is_open()) {
+                        std::string line;
+                        while (std::getline(ifs, line)) {
+                            if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+                            if (!line.empty()) { expanded.push_back(line); }
+                        }
+                        continue;
+                    }
+                }
+                expanded.push_back(a);
+            }
+            args = std::move(expanded);
+        }
     }
 
     // Retrive user command by concatenating all arguments.

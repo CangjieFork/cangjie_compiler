@@ -34,6 +34,35 @@
 using namespace Cangjie;
 namespace {
 #ifdef _WIN32
+// Write all arguments after argv[0], one per line, to a unique temp response
+// file and return its path (empty on failure). Used when the command line is
+// too long for CreateProcess; the child expands it via ExpandResponseFiles.
+std::string WriteArgsToResponseFile(const std::vector<std::string>& arguments)
+{
+    char tempDir[MAX_PATH + 1] = {0};
+    DWORD dirLen = GetTempPathA(MAX_PATH, tempDir);
+    if (dirLen == 0 || dirLen > MAX_PATH) {
+        return "";
+    }
+    char tempFile[MAX_PATH + 1] = {0};
+    if (GetTempFileNameA(tempDir, "cjc", 0, tempFile) == 0) {
+        return "";
+    }
+    std::ofstream ofs(tempFile, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) {
+        return "";
+    }
+    for (size_t i = 1; i < arguments.size(); ++i) {
+        ofs << arguments[i] << "\n";
+    }
+    ofs.close();
+    if (!ofs) {
+        return "";
+    }
+    return std::string(tempFile);
+}
+#endif
+#ifdef _WIN32
 std::string GetSystemErrorMessage(DWORD errCode)
 {
     if (errCode == 0) {
@@ -192,6 +221,23 @@ std::unique_ptr<ToolFuture> Tool::Run() const
         }
     }
     std::string commandLine = oss.str();
+    // The Windows process command line is limited to 32767 characters. A large
+    // compilation (a big cyclic package group with many -p/-L arguments) can exceed
+    // it; fall back to a response file the child expands via ExpandResponseFiles.
+    if (commandLine.size() >= 30000 && arguments.size() > 1) {
+        std::string responseFile = WriteArgsToResponseFile(arguments);
+        if (!responseFile.empty()) {
+            std::ostringstream head;
+            if (arguments[0].empty() ||
+                arguments[0].find_first_of("\t \"&'()*<>\\`^|\n") != std::string::npos) {
+                head << std::quoted(arguments[0]);
+            } else {
+                head << arguments[0];
+            }
+            head << " @" << responseFile;
+            commandLine = head.str();
+        }
+    }
 
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
