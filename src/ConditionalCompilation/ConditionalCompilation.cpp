@@ -365,8 +365,14 @@ bool ConditionalCompilationImpl::ConditionCheck(
     auto isBuiltin = TARGET_CONDITION.count(conditionStr) > 0;
     auto isUserDefined = !isBuiltin && passedCondition.count(conditionStr) == 1;
     if (!isBuiltin && !isUserDefined) {
-        (void)ci->diag.DiagnoseRefactor(
-            DiagKindRefactor::conditional_compilation_not_support_this_condition, begin, conditionStr);
+        // windows-rs/Rust parity: an undefined cfg condition (neither a builtin nor passed via
+        // --cfg/cfg.toml) is NOT an error. Like `#[cfg(feature = "x")]` when feature x is not
+        // enabled, it is treated as absent and the condition evaluates to false, so the gated
+        // declaration is simply excluded. Reporting the condition as not-valid here (without a
+        // diagnostic) makes CheckConditionExpr return false, which the caller folds into "the
+        // @When is false -> drop the declaration" -- no build error. (This lets a consumer enable
+        // only the namespaces it needs and leave the rest of the full windows_sys surface
+        // undefined, exactly as windows-rs enables a subset of Cargo features.)
         return false;
     }
     // Check `arch`, `env`, `backend` and `os` condition value.
