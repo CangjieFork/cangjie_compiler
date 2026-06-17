@@ -86,9 +86,16 @@ llvm::Value* CodeGen::GenerateVArrayBuilder(IRBuilder2& irBuilder, const CHIR::V
     auto varrayType = StaticCast<CHIR::VArrayType*>(varrayBuilder.GetResult()->GetType());
     auto varrayLen = (cgMod | varrayBuilder.GetSize())->GetRawValue();
 
-    auto item = DynamicCast<CHIR::LocalVar*>(varrayBuilder.GetItem());
-    CJC_NULLPTR_CHECK(item);
-    bool isInitedByItem = item && !item->GetExpr()->IsConstantNull();
+    // Discriminate the two VArrayBuilder forms by the init-function operand's type, not
+    // by whether the item is a constant null. The translator builds the `repeat: v` form
+    // as VArrayBuilder(size, v, nullFn) where nullFn is a plain function-pointer null,
+    // and the lambda form as VArrayBuilder(size, nullItem, initFn) where initFn is an
+    // $Auto_Env closure object. The repeat value v may itself legitimately be a constant
+    // null (e.g. a null CFunc / null CPointer), so testing the item would misroute such a
+    // value to the lambda path, which then dereferences a non-existent init-function
+    // class and crashes codegen. The init function is an AutoEnv closure only in the
+    // lambda form, which distinguishes the two unambiguously.
+    bool isInitedByItem = !DeRef(*varrayBuilder.GetInitFunc()->GetType())->IsAutoEnvBase();
     if (!isInitedByItem) {
         // VArrayBuilder(size, nullptr, initLambda: Class-$Auto_Env_Base_XXXX)
         auto autoEnvOfInitFunc = varrayBuilder.GetInitFunc();
@@ -98,7 +105,7 @@ llvm::Value* CodeGen::GenerateVArrayBuilder(IRBuilder2& irBuilder, const CHIR::V
         return irBuilder.VArrayInitedByLambda(varrayLen, *cgValue, *varrayType);
     } else {
         // VArrayBuilder(size, value, initLambda: nullptr)
-        auto cgValue = (cgMod | item);
+        auto cgValue = (cgMod | varrayBuilder.GetItem());
         return irBuilder.VArrayInitedByItem(varrayLen, *cgValue, *varrayType);
     }
 }
