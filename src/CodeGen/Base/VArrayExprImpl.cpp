@@ -86,16 +86,26 @@ llvm::Value* CodeGen::GenerateVArrayBuilder(IRBuilder2& irBuilder, const CHIR::V
     auto varrayType = StaticCast<CHIR::VArrayType*>(varrayBuilder.GetResult()->GetType());
     auto varrayLen = (cgMod | varrayBuilder.GetSize())->GetRawValue();
 
-    // Discriminate the two VArrayBuilder forms by the init-function operand's type, not
-    // by whether the item is a constant null. The translator builds the `repeat: v` form
-    // as VArrayBuilder(size, v, nullFn) where nullFn is a plain function-pointer null,
-    // and the lambda form as VArrayBuilder(size, nullItem, initFn) where initFn is an
-    // $Auto_Env closure object. The repeat value v may itself legitimately be a constant
-    // null (e.g. a null CFunc / null CPointer), so testing the item would misroute such a
-    // value to the lambda path, which then dereferences a non-existent init-function
-    // class and crashes codegen. The init function is an AutoEnv closure only in the
-    // lambda form, which distinguishes the two unambiguously.
-    bool isInitedByItem = !DeRef(*varrayBuilder.GetInitFunc()->GetType())->IsAutoEnvBase();
+    // Discriminate the two VArrayBuilder forms. Only the lambda form has an init function
+    // that is BOTH non-null AND an $Auto_Env closure object; every repeat form fails at least
+    // one of those, so `isInitedByItem = initFunc-is-const-null || init-func-type-is-not-AutoEnv`.
+    // Neither test alone suffices:
+    //   * A pure TYPE test (IsAutoEnvBase) misroutes the ordinary `repeat: v` form (e.g. a
+    //     scalar value): closure conversion retypes that form's null init-function from a plain
+    //     function type to an $Auto_Env class, so it looks like a lambda by type -- then codegen
+    //     loads a function pointer from the null closure and calls it per element, faulting on
+    //     the null page every iteration and hanging at runtime.
+    //   * A pure VALUE test (IsConstantNull) misroutes the `repeat: <function-typed value>` form
+    //     (e.g. a null CFunc): the translator routes a function-typed repeat value through the
+    //     lambda-shaped builder, putting the value itself (a non-constant TypeCast, not a null
+    //     literal) in the init-function slot -- testing only constant-null then takes the lambda
+    //     path and dereferences a non-existent init-function class, crashing codegen (SIGSEGV).
+    // Its CFunc type is not AutoEnv, so the type term catches it; the scalar case's null value
+    // is caught by the value term. Together they classify all three forms correctly.
+    auto initFuncVar = DynamicCast<CHIR::LocalVar*>(varrayBuilder.GetInitFunc());
+    bool initFuncIsConstNull = initFuncVar != nullptr && initFuncVar->GetExpr()->IsConstantNull();
+    bool initFuncIsAutoEnv = DeRef(*varrayBuilder.GetInitFunc()->GetType())->IsAutoEnvBase();
+    bool isInitedByItem = initFuncIsConstNull || !initFuncIsAutoEnv;
     if (!isInitedByItem) {
         // VArrayBuilder(size, nullptr, initLambda: Class-$Auto_Env_Base_XXXX)
         auto autoEnvOfInitFunc = varrayBuilder.GetInitFunc();
