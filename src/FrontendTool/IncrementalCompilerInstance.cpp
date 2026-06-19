@@ -479,15 +479,20 @@ bool IncrementalCompilerInstance::PerformCodeGen()
 {
     Utils::ProfileRecorder recorder("Main Stage", "CodeGen");
     if (kind == IncreKind::NO_CHANGE) {
+        // bitcodeFilesName already holds every group member's cached bitcode name; load them once
+        // (looping per source package would re-register the same group bitcodes N times).
+        LoadCachedCodegenResult();
         for (auto& srcPkg : GetSourcePackages()) {
-            LoadCachedCodegenResult();
             invocation.globalOptions.UpdateCachedDirName(srcPkg->fullPackageName);
         }
         return true;
     }
     // Before CodeGen, the dependency relationship of a package contains only some packages.
-    // So this function rearranges the dependencies of all packages.
-    return CodegenOnePackage(kind == IncreKind::INCR);
+    // So this function rearranges the dependencies of all packages. For a condensed group of
+    // (possibly cyclic) source packages compiled together (multi -p), every CHIR package must be
+    // emitted so each produces its own object; CodegenAllPackages loops them (single-package builds
+    // fall through to the original single-package path inside it).
+    return CodegenAllPackages(kind == IncreKind::INCR);
 }
 
 bool IncrementalCompilerInstance::PerformCjoSaving()

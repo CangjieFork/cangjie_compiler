@@ -48,6 +48,7 @@ public:
     bool SaveCjo(const std::vector<Ptr<Package>>& pkgs);
     void RearrangeImportedPackageDependence();
     bool CodegenOnePackage(bool enableIncrement);
+    bool CodegenAllPackages(bool enableIncrement);
 
 private:
     DefaultCompilerInstance& ci;
@@ -341,11 +342,16 @@ bool DefaultCompilerInstance::PerformMangling()
 bool DefaultCIImpl::PerformCodeGen()
 {
     Utils::ProfileRecorder recorder("Main Stage", "CodeGen");
+    return CodegenAllPackages(false);
+}
+
+bool DefaultCIImpl::CodegenAllPackages(bool enableIncrement)
+{
     // Before CodeGen, the dependency relationship of a package contains only some packages.
     // So this function rearranges the dependencies of all packages.
     auto chirPkgs = ci.GetAllCHIRPackages();
     if (chirPkgs.size() <= 1) {
-        return CodegenOnePackage(false);
+        return CodegenOnePackage(enableIncrement);
     }
     // A group of (possibly cyclic) source packages was compiled together within one module.
     // Emit each package separately so every package produces its own bitcode/object; cross
@@ -364,7 +370,7 @@ bool DefaultCIImpl::PerformCodeGen()
         ci.chirData->SetCurrentCHIRPackage(pkg);
         ci.chirData->GetCHIRContext().SetCurPackage(pkg);
         ci.chirData->ActivateCodegenFuncsForPackage(pkg);
-        if (!CodegenOnePackage(false)) {
+        if (!CodegenOnePackage(enableIncrement)) {
             ret = false;
             break;
         }
@@ -438,5 +444,10 @@ void DefaultCompilerInstance::RearrangeImportedPackageDependence() const
 bool DefaultCompilerInstance::CodegenOnePackage(bool enableIncrement) const
 {
     return impl->CodegenOnePackage(enableIncrement);
+}
+
+bool DefaultCompilerInstance::CodegenAllPackages(bool enableIncrement) const
+{
+    return impl->CodegenAllPackages(enableIncrement);
 }
 }

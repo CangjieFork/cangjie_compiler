@@ -511,7 +511,12 @@ bool CompilerInstance::ShouldWriteCacheFile() const
         return false;
     }
     if (srcPkgs.size() != 1) {
-        InternalError("source packages should only have one element.");
+        // Circular subpackage SCC groups are condensed by the build driver into a single
+        // multi-package (multi -p) compile, so srcPkgs can hold >1 element here. The
+        // incremental-cache writer below is single-package (it uses srcPkgs[0]); rather
+        // than asserting, skip cache writing for such a group -- it recompiles fully next
+        // build, while single-package members still get incremental caching.
+        return false;
     }
     if (!invocation.globalOptions.compilePackage && invocation.globalOptions.srcFiles.empty() &&
         !invocation.globalOptions.inputObjs.empty()) {
