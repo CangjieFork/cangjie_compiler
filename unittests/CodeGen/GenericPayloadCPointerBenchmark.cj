@@ -1,14 +1,16 @@
 // Microbenchmark input for generic CPointer<Int64>.read.
-func readLoop<T>(ptr: CPointer<T>, count: Int64): Unit where T <: CType {
+func readLoop<T>(ptr: CPointer<T>, count: Int64): Int64 where T <: CType {
     var i: Int64 = 0
+    var checksum: Int64 = 0
     while (i < count) {
-        let _ = unsafe { ptr.read(i) }
+        checksum += unsafe { ptr.read(0) }
         i += 1
     }
+    return checksum
 }
 
 main() {
     let ptr = unsafe { LibC.malloc<Int64>() }
-    readLoop<Int64>(ptr, 10000000)
+    println(readLoop<Int64>(ptr, 10000000))
     unsafe { LibC.free(ptr) }
 }
