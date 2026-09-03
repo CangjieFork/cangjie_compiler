@@ -1,9 +1,9 @@
 // Microbenchmark input for generic CPointer<Int64>.read.
-func readLoop<T>(ptr: CPointer<T>, count: Int64): Int64 where T <: CType {
+func readLoop<T>(ptr: CPointer<T>, count: Int64): T where T <: CType {
     var i: Int64 = 0
-    var checksum: Int64 = 0
+    var checksum: T = unsafe { ptr.read(0) }
     while (i < count) {
-        checksum += unsafe { ptr.read(0) }
+        checksum = unsafe { ptr.read(0) }
         i += 1
     }
     return checksum

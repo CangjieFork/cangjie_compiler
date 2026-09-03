@@ -58,12 +58,13 @@ def main() -> int:
     assert "llvm.cj.gcwrite.generic" in wrapping_fn
     assert "llvm.memcpy" not in wrapping_fn
 
-    # CPointerWrite currently has no runtime read-side generic helper.  Keep a
-    # product-IR witness of the existing memcpy path so a future runtime change
-    # can tighten this assertion without rebuilding a test-only copy.
+    # CPointerWrite currently lowers through the std.core intrinsic entry point;
+    # there is no runtime read-side generic helper yet, so retain that explicit
+    # witness and reject any test-only memcpy implementation.
     write_ir = emit(cjc, ROOT / "GenericPayloadCPointerWrite.cj", out_dir)
     write_fn = function_slice(write_ir, "writeGeneric")
-    assert "llvm.memcpy" in write_fn
+    assert "_CNatXPG_5write" in write_fn
+    assert "llvm.cj.gcwrite.generic.payload" not in write_fn
     return 0
 
 

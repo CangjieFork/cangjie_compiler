@@ -28,6 +28,14 @@ add_test(
             ${CMAKE_CURRENT_BINARY_DIR}/generic_payload_ir)
 set_tests_properties(GenericPayloadIR PROPERTIES DEPENDS CodeGenTests)
 
+add_test(
+    NAME GenericPayloadWrappingElse
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_generic_payload_wrapping_else.py
+            $<TARGET_FILE:cjc>
+            ${CMAKE_CURRENT_SOURCE_DIR}/GenericPayloadWithoutTIElse.cj
+            ${CMAKE_CURRENT_BINARY_DIR}/generic_payload_without_ti_else.ir)
+
 if(CANGJIE_DOWNLOAD_DEPS)
     add_dependencies(CodeGenTests binary-deps)
 elseif(CANGJIE_CODEGEN_CJNATIVE_BACKEND)
