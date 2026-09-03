@@ -26,7 +26,11 @@ add_test(
             ${CMAKE_CURRENT_SOURCE_DIR}/test_generic_payload_ir.py
             $<TARGET_FILE:cjc>
             ${CMAKE_CURRENT_BINARY_DIR}/generic_payload_ir)
-set_tests_properties(GenericPayloadIR PROPERTIES DEPENDS CodeGenTests)
+set_tests_properties(
+    GenericPayloadIR
+    PROPERTIES
+        DEPENDS CodeGenTests
+        ENVIRONMENT "LLVM_DIS=${CMAKE_BINARY_DIR}/third_party/llvm/bin/llvm-dis")
 
 add_test(
     NAME GenericPayloadWrappingElse
