@@ -15,3 +15,8 @@ public func callGeneric<T>(payload: RefPayload<T>, value: T): Unit {
     var local = payload
     local.update(value)
 }
+
+main() {
+    var payload = RefPayload<String>("seed")
+    callGeneric<String>(payload, "next")
+}
