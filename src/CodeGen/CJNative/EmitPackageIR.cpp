@@ -567,7 +567,10 @@ void ReplaceFunction(CGModule& cgMod)
                 irBuilder.CallGCWriteAgg(structType, {thisParamWithTI, payloadPtr, thisParamWithoutTI, size64});
             }
         } else {
-            irBuilder.CreateMemCpy(payloadPtr, llvm::MaybeAlign(), thisParamWithoutTI, llvm::MaybeAlign(), size32);
+            // The erased/generic representation does not expose reference fields to
+            // IsTypeContainsRef.  Route the payload through the runtime helper so
+            // TypeInfo can select the appropriate barrier-aware copy at runtime.
+            irBuilder.CallGCWriteGenericPayload({thisParamWithTI, thisParamWithoutTI, size32});
         }
         /// step4: emit a new CallInst with "xxx"
         auto callee = item.cgFuncCallee.GetWrapperFunction();
