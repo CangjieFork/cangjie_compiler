@@ -6,6 +6,8 @@
 
 file(GLOB CG_TEST_SRC *.cpp)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 add_executable(CodeGenTests
     ${CG_TEST_SRC}
     ${CMAKE_SOURCE_DIR}/src/Basic/Print.cpp)
@@ -17,6 +19,14 @@ target_link_libraries(
     GTest::gtest_main)
 
 add_test(NAME CodeGenTests COMMAND CodeGenTests)
+
+add_test(
+    NAME GenericPayloadIR
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_generic_payload_ir.py
+            $<TARGET_FILE:cjc>
+            ${CMAKE_CURRENT_BINARY_DIR}/generic_payload_ir)
+set_tests_properties(GenericPayloadIR PROPERTIES DEPENDS CodeGenTests)
 
 if(CANGJIE_DOWNLOAD_DEPS)
     add_dependencies(CodeGenTests binary-deps)
