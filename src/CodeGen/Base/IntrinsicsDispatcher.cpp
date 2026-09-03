@@ -463,12 +463,13 @@ llvm::Value* CPointerRead(IRBuilder2& irBuilder, const CHIR::IntrinsicBase& intr
         auto tiOfResult = irBuilder.CreateTypeInfo(retTy);
         auto retTySize = irBuilder.GetLayoutSize_32(*retTy);
         ret = irBuilder.CallIntrinsicAllocaGeneric({tiOfResult, retTySize});
-        auto destPayloadPtr = irBuilder.GetPayloadFromObject(ret);
         auto fixedTypeSize = irBuilder.CreateZExtOrTrunc(retTySize, llvm::Type::getInt64Ty(cgMod.GetLLVMContext()));
         auto offset = irBuilder.CreateMul(fixedTypeSize, pointerIndex);
         gep = irBuilder.CreateGEP(irBuilder.getInt8Ty(), pointerRefPtr, offset, "ele.ptr");
         InsertAsanInstrument(cgMod, irBuilder, intrinsic, gep, "CJ_MCC_AsanRead");
-        irBuilder.CreateMemCpy(destPayloadPtr, llvm::MaybeAlign(), gep, llvm::MaybeAlign(), retTySize);
+        // Generic values carry their layout in TypeInfo; use the runtime payload
+        // helper instead of emitting an unconditional memcpy into the heap object.
+        irBuilder.CallGCWriteGenericPayload({ret, gep, retTySize});
     } else {
         auto cgRetTy = CGType::GetOrCreate(cgMod, retTy);
         CJC_NULLPTR_CHECK(cgRetTy);
