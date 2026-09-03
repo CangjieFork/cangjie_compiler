@@ -43,6 +43,18 @@ def main() -> int:
         return 2
     cjc, out_dir = sys.argv[1], pathlib.Path(sys.argv[2])
 
+    # Structural guardrails pin the product call sites as well as the emitted
+    # IR.  Removing either product helper call makes this test fail immediately
+    # (before any test-only code could mask the regression).
+    dispatcher = (ROOT.parents[2] / "src/CodeGen/Base/IntrinsicsDispatcher.cpp").read_text()
+    read_branch = dispatcher.split("if (retTy->IsGeneric())", 1)[1].split("} else {", 1)[0]
+    assert "CallGCWriteGenericPayload" in read_branch
+    assert "CreateMemCpy" not in read_branch
+    emit_package = (ROOT.parents[2] / "src/CodeGen/CJNative/EmitPackageIR.cpp").read_text()
+    wrapping_start = emit_package.index("if (auto thisType = CGType::GetOrCreate")
+    wrapping_else = emit_package[wrapping_start:].split("/// step4", 1)[0]
+    assert "CallGCWriteGenericPayload" in wrapping_else
+
     read_ir = emit(cjc, ROOT / "GenericPayloadCPointerRead.cj", out_dir)
     read_fn = function_slice(read_ir, "readGeneric")
     assert "llvm.cj.gcwrite.generic.payload" in read_fn
